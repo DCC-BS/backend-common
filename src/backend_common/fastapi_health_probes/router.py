@@ -94,3 +94,5 @@ def health_probe_router(service_dependencies: list[ServiceDependency]) -> APIRou
         * Rule: Useful for apps that need to load large ML models or caches on boot.
         """
         return {"status": "started", "timestamp": datetime.now(UTC).isoformat()}
+
+    return router
