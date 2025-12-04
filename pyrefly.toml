@@ -1,0 +1,13 @@
+project-includes = [
+    "src",
+    "tests",
+]
+project-excludes = [
+    ".venv",
+    "**/__pycache__",
+    "**/.pytest_cache",
+]
+
+python-interpreter-path = ".venv/bin/python3"
+
+infer-with-first-use = false
