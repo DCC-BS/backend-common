@@ -31,7 +31,6 @@ def health_probe_router(service_dependencies: list[ServiceDependency]) -> APIRou
     # Configure the filter
     logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
 
-
     @router.get("/liveness")
     async def liveness_probe():
         """
@@ -41,7 +40,6 @@ def health_probe_router(service_dependencies: list[ServiceDependency]) -> APIRou
         * Rule: Keep it simple. Do NOT check databases here.
         """
         return {"status": "up", "uptime_seconds": time.time() - START_TIME}
-
 
     @router.get("/readiness")
     async def readiness_probe(response: Response):
@@ -54,7 +52,7 @@ def health_probe_router(service_dependencies: list[ServiceDependency]) -> APIRou
 
         health_check: dict[str, Any] = {
             "status": "ready",
-            "checks": {service["name"]: "unknown" for service in service_dependencies}
+            "checks": {service["name"]: "unknown" for service in service_dependencies},
         }
 
         try:
@@ -71,7 +69,10 @@ def health_probe_router(service_dependencies: list[ServiceDependency]) -> APIRou
                                 health_check["checks"][service["name"]] = "healthy"
                             else:
                                 health_check["checks"][service["name"]] = f"unhealthy (status: {svc_response.status})"
-                                raise HTTPException(status_code=HTTPStatus.SERVICE_UNAVAILABLE, detail=f"{service['name']} returned status {svc_response.status}")
+                                raise HTTPException(
+                                    status_code=HTTPStatus.SERVICE_UNAVAILABLE,
+                                    detail=f"{service['name']} returned status {svc_response.status}",
+                                )
                     except aiohttp.ClientError as e:
                         health_check["checks"][service["name"]] = f"error: {e!s}"
                         raise
@@ -83,7 +84,6 @@ def health_probe_router(service_dependencies: list[ServiceDependency]) -> APIRou
             return {"status": "unhealthy", "checks": health_check["checks"], "error": str(e)}
         else:
             return health_check
-
 
     @router.get("/startup")
     async def startup_probe():

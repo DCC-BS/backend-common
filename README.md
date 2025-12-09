@@ -206,4 +206,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Homepage**: https://DCC-BS.github.io/backend-common/
 - **Repository**: https://github.com/DCC-BS/backend-common
 - **Documentation**: https://DCC-BS.github.io/backend-common/
-
