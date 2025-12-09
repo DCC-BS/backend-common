@@ -19,6 +19,20 @@ class ApiErrorException(Exception):
         self.error_response = error_response
 
 
+def api_error_exception(
+    errorId: str = ApiErrorCodes.UNEXPECTED_ERROR,
+    status: int = status.HTTP_500_INTERNAL_SERVER_ERROR,
+    debugMessage: str | None = None,
+):
+    return ApiErrorException(
+        error_response={
+            "errorId": errorId,
+            "status": status,
+            "debugMessage": debugMessage,
+        }
+    )
+
+
 def construct_api_error_exception(
     exception: Exception,
     error_id: str | ApiErrorCodes = ApiErrorCodes.UNEXPECTED_ERROR,
