@@ -1,6 +1,6 @@
 import dspy  # type: ignore[import-not-found]  # pyright: ignore[reportMissingTypeStubs]
 
-from src.backend_common.dspy_common.adapters import DisableReasoningAdapter
+from backend_common.dspy_common.adapters import DisableReasoningAdapter
 
 
 def test_disable_reasoning_adapter_appends_magic_token() -> None:

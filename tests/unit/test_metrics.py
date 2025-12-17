@@ -1,6 +1,6 @@
 import dspy  # type: ignore[import-not-found]  # pyright: ignore[reportMissingTypeStubs]
 
-from src.backend_common.dspy_common.metrics import edit_distance_metric
+from backend_common.dspy_common.metrics import edit_distance_metric
 
 
 def test_edit_distance_metric_perfect_score() -> None:

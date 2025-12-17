@@ -11,7 +11,7 @@ from structlog.processors import CallsiteParameter
 from structlog.stdlib import BoundLogger
 from structlog.types import EventDict, Processor
 
-from src.backend_common.config.app_config import get_env_or_throw
+from backend_common.config import get_env_or_throw
 
 
 # Standard library logging setup
