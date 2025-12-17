@@ -6,7 +6,7 @@ def edit_distance_metric(
     gold: dspy.Example,
     pred: dspy.Prediction,
     key: str,
-    trace=None,
+    trace: str | None = None,  # Note to myself: We are not sure if it is realy a string :)
 ) -> float:
     """
     Calculate the word erro rate (WER) and character error rate (CER) between the predicted and reference values for a given key.
