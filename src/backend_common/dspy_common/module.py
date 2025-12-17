@@ -39,7 +39,7 @@ class AbstractDspyModule(dspy.Module):
         with dspy.context(adapter=adapter):
             return self.predict_with_context(**kwargs)
 
-    def stream(self, reasoning: bool = False, **kwargs: object) -> AsyncGenerator[str, None]:
+    def stream(self, reasoning: bool = False, **kwargs: object) -> AsyncGenerator[str]:
         """
         Stream text chunks from the DSPy model with automatic adapter selection.
 
@@ -51,13 +51,15 @@ class AbstractDspyModule(dspy.Module):
         async def generate_chunks():
             with dspy.context(adapter=adapter):
                 async for chunk in self.stream_with_context(**kwargs):
-                    logger.info(str(chunk))
-                    yield self._chunk_text(chunk)
+                    text_chunk = self._chunk_text(chunk)
+                    if text_chunk is None:
+                        continue
+                    else:
+                        yield text_chunk
 
         return generate_chunks()
 
     @staticmethod
-    def _chunk_text(chunk: Chunk) -> str:
+    def _chunk_text(chunk: Chunk) -> str | None:
         if isinstance(chunk, StreamResponse):
             return chunk.chunk
-        return chunk
