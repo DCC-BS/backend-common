@@ -1,6 +1,5 @@
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator
-from pathlib import Path
 
 import dspy
 from dspy.streaming.messages import StreamResponse
