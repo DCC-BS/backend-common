@@ -163,6 +163,80 @@ Required variables: `CLIENT_URL`, `HMAC_SECRET`, `OPENAI_API_KEY`, `LLM_URL`, `D
 - **Streaming Listener**: `SwissGermanStreamListener` normalizes `ß` to `ss` in streamed content and reasoning fields.
 - **Metrics**: `edit_distance_metric` combines WER and CER for a maximized score.
 
+#### Implementing `AbstractDspyModule`
+`AbstractDspyModule` handles adapter selection (reasoning vs. no-reasoning) and normalizes streaming chunks. Subclasses only implement `predict_with_context` and `stream_with_context`; the base class already wires `forward` and `stream` to create a `dspy.context` with the right adapter.
+
+Example translation module:
+
+```python
+import dspy
+from dspy.streaming.messages import StreamResponse
+
+from backend_common.config.app_config import AppConfig
+from backend_common.dspy_common.module import AbstractDspyModule
+from backend_common.dspy_common.stream_listener import SwissGermanStreamListener
+from backend_common.logger import get_logger
+
+
+class TranslationSignature(dspy.Signature):
+    """source_text, source_language, target_language, domain, tone, glossary, context -> translated_text"""
+
+    source_text = dspy.InputField(desc="Input text to translate. May contain markdown formatting.")
+    source_language = dspy.InputField(desc="Source language")
+    target_language = dspy.InputField(desc="Target language")
+    domain = dspy.InputField(desc="Domain or subject area for translation")
+    tone = dspy.InputField(desc="Tone or style for translation")
+    glossary = dspy.InputField(desc="Glossary definitions for translation")
+    context = dspy.InputField(desc="Context containing previous translations to get consistent translations")
+    translated_text = dspy.OutputField(
+        desc="Translated text. Contains markdown formatting if the input text contains markdown formatting."
+    )
+
+
+class TranslationModule(AbstractDspyModule):
+    def __init__(self, app_config: AppConfig):
+        super().__init__()
+        self.predict = dspy.Predict(TranslationSignature)
+        stream_listener = SwissGermanStreamListener(signature_field_name="translated_text", allow_reuse=True)
+        self.stream_predict = dspy.streamify(self.predict, stream_listeners=[stream_listener])
+        self.logger = get_logger(__name__)
+        if os.path.exists(app_config.translation_module_path):
+            self.load(app_config.translation_module_path)
+
+    def predict_with_context(self, **kwargs: object) -> dspy.Prediction:
+        return self.predict(**kwargs)
+
+    async def stream_with_context(self, **kwargs: object) -> AsyncIterator[StreamResponse]:
+        output = self.stream_predict(**kwargs)
+        async for chunk in output:
+            self.logger.info(str(chunk))
+            yield chunk
+```
+
+Usage:
+
+```python
+module = TranslationModule(app_config)
+
+# Single prediction
+result = module.forward(
+    source_text="Hallo zusammen!",
+    source_language="de",
+    target_language="en",
+    reasoning=False,  # set True to enable the default DSPy reasoning adapter
+)
+print(result.translated_text)
+
+# Streaming prediction
+async for text_chunk in module.stream(
+    source_text="Hallo zusammen!",
+    source_language="de",
+    target_language="en",
+):
+    print(text_chunk, end="", flush=True)
+```
+
+
 
 ## Development
 

@@ -187,6 +187,7 @@ dependencies = [
     { name = "datasets" },
     { name = "dspy" },
     { name = "jiwer" },
+    { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "structlog" },
 ]
@@ -215,6 +216,7 @@ requires-dist = [
     { name = "dspy", specifier = ">=3.0.4" },
     { name = "fastapi", marker = "extra == 'fastapi'", specifier = ">=0.115,<1.0" },
     { name = "jiwer", specifier = ">=4.0.0" },
+    { name = "pydantic", specifier = ">=2.12.5" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
     { name = "structlog", specifier = ">=25.1.0" },
 ]
