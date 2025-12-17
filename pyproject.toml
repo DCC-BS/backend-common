@@ -19,6 +19,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
+    "dspy>=3.0.4",
     "python-dotenv>=1.0.1",
     "structlog>=25.1.0",
 ]
