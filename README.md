@@ -12,25 +12,27 @@ Common utilities and components for backend services developed by the Data Compe
 - **FastAPI Health Probes**: Kubernetes-ready health check endpoints (liveness, readiness, startup)
 - **Structured Logging**: Integration with `structlog` for consistent logging across services
 - **Configuration Management**: Environment-based configuration with `python-dotenv`
+- **DSPy Utilities**: Helpers for DSPy modules, streaming listeners, metrics, and dataset preparation
 
 ## Installation
 
-### Basic Installation
+### Basic Installation (uv)
 
 ```bash
-pip install backend-common
+uv add backend-common
 ```
 
 ### With FastAPI Support
 
 ```bash
-pip install backend-common[fastapi]
+uv add "backend-common[fastapi]"
 ```
 
 ## Requirements
 
 - Python 3.12 or higher
 - Dependencies:
+  - `dspy>=3.0.4`
   - `python-dotenv>=1.0.1`
   - `structlog>=25.1.0`
 
@@ -137,6 +139,31 @@ If a dependency fails:
 - **Authentication Support**: Optional API key support for authenticated health checks
 - **Kubernetes-Ready**: HTTP status codes follow Kubernetes conventions (200 = healthy, 503 = unhealthy)
 
+### Structured Logging
+
+- Initialize structured logging with `init_logger()`, which auto-selects JSON output in production (`IS_PROD=true`) and colored console output otherwise.
+- Retrieve loggers via `get_logger(__name__)`. A `request_id` and timestamp are added automatically.
+
+### Application Configuration
+
+Load strongly-typed configuration from environment variables:
+
+```python
+from backend_common.config.app_config import AppConfig
+
+config = AppConfig.from_env()
+print(config)  # secrets are redacted in __str__
+```
+
+Required variables: `CLIENT_URL`, `HMAC_SECRET`, `OPENAI_API_KEY`, `LLM_URL`, `DOCLING_URL`, `WHISPER_URL`, `OCR_URL`. Missing values raise `AppConfigError`.
+
+### DSPy Utilities
+
+- **Adapters and Modules**: `AbstractDspyModule` wraps DSPy modules with automatic adapter selection. The `DisableReasoningAdapter` appends the `\no_think` token for Qwen 3 hybrid reasoning models.
+- **Streaming Listener**: `SwissGermanStreamListener` normalizes `ß` to `ss` in streamed content and reasoning fields.
+- **Metrics**: `edit_distance_metric` combines WER and CER for a maximized score.
+
+
 ## Development
 
 ### Setup
@@ -148,24 +175,16 @@ git clone https://github.com/DCC-BS/backend-common.git
 cd backend-common
 ```
 
-2. Create a virtual environment:
+2. Install development dependencies:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-```
-
-3. Install development dependencies:
-
-```bash
-pip install -e ".[fastapi]"
-pip install -r requirements-dev.txt  # or install dev dependency group
+uv sync --group dev --extra fastapi  # include FastAPI extras for local dev
 ```
 
 ### Running Tests
 
 ```bash
-pytest
+uv run pytest
 ```
 
 ### Code Quality
@@ -179,13 +198,13 @@ This project uses:
 Run linting:
 
 ```bash
-ruff check .
+uv run ruff check .
 ```
 
 Run pre-commit hooks:
 
 ```bash
-pre-commit run --all-files
+uv run pre-commit run --all-files
 ```
 
 ## Contributing
