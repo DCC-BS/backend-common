@@ -1,7 +1,6 @@
 name: Publish to PyPI
 on:
     workflow_dispatch:
-
 jobs:
     publish:
         uses: DCC-BS/ci-workflows/.github/workflows/pypi-publish.yml@v7
