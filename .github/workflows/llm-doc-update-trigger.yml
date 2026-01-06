@@ -1,0 +1,14 @@
+name: LLM Doc Update Trigger
+
+on:
+    pull_request:
+        types: [opened, edited, synchronize]
+
+jobs:
+    llm-doc-update:
+        uses: DCC-BS/ci-workflows/.github/workflows/llm-doc-update-conditional.yml@v7
+        with:
+            doc_path: "README.md"
+        secrets:
+            OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+            GH_TOKEN: ${{ secrets.GH_TOKEN }}
