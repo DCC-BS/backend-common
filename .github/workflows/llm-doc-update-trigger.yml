@@ -9,7 +9,7 @@ jobs:
         if: >
             github.event.issue.pull_request &&
             github.event.comment.body == '/documentation'
-        uses: DCC-BS/ci-workflows/.github/workflows/llm-doc-update-conditional.yml@v7
+        uses: DCC-BS/ci-workflows/.github/workflows/llm-doc-update.yml@v7
         with:
             doc_repo: DCC-BS/documentation
             doc_path: markdown/backend-common
