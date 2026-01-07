@@ -8,7 +8,8 @@ jobs:
     llm-doc-update:
         if: >
             github.event.issue.pull_request &&
-            github.event.comment.body == '/documentation'
+            github.event.comment.body == '/documentation' &&
+            (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER')
         uses: DCC-BS/ci-workflows/.github/workflows/llm-doc-update.yml@v7
         with:
             doc_repo: DCC-BS/documentation
