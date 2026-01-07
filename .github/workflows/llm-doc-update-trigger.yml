@@ -6,6 +6,8 @@ on:
 
 jobs:
     llm-doc-update:
+        if: github.event.pull_request.merged == true
+
         uses: DCC-BS/ci-workflows/.github/workflows/llm-doc-update-conditional.yml@v7
         with:
             doc_repo: "DCC-BS/documentation"
