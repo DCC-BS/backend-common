@@ -1,8 +1,8 @@
 from fastapi import FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse
 
-from backend_common.fastapi_error_handling.error_codes import ApiErrorCodes
-from backend_common.fastapi_error_handling.error_exception import ApiErrorException
+from dcc_backend_common.fastapi_error_handling.error_codes import ApiErrorCodes
+from dcc_backend_common.fastapi_error_handling.error_exception import ApiErrorException
 
 
 def inject_api_error_handler(app: FastAPI):

@@ -1,4 +1,4 @@
-# backend-common
+# dcc-backend-common
 
 [![Commit activity](https://img.shields.io/github/commit-activity/m/DCC-BS/backend-common)](https://img.shields.io/github/commit-activity/m/DCC-BS/backend-common)
 [![License](https://img.shields.io/github/license/DCC-BS/backend-common)](https://img.shields.io/github/license/DCC-BS/backend-common)
@@ -7,7 +7,7 @@ Common utilities and components for backend services developed by the Data Compe
 
 ## Overview
 
-`backend-common` is a Python library that provides shared functionality for backend services, including:
+`dcc-backend-common` is a Python library that provides shared functionality for backend services, including:
 
 - **FastAPI Health Probes**: Kubernetes-ready health check endpoints (liveness, readiness, startup)
 - **Structured Logging**: Integration with `structlog` for consistent logging across services
@@ -19,13 +19,13 @@ Common utilities and components for backend services developed by the Data Compe
 ### Basic Installation (uv)
 
 ```bash
-uv add backend-common
+uv add dcc-backend-common
 ```
 
 ### With FastAPI Support
 
 ```bash
-uv add "backend-common[fastapi]"
+uv add "dcc-backend-common[fastapi]"
 ```
 
 ## Requirements
@@ -50,7 +50,7 @@ The library provides Kubernetes-ready health check endpoints that follow best pr
 
 ```python
 from fastapi import FastAPI
-from backend_common.fastapi_health_probes import health_probe_router
+from dcc_backend_common.fastapi_health_probes import health_probe_router
 
 app = FastAPI()
 
@@ -149,7 +149,7 @@ If a dependency fails:
 Load strongly-typed configuration from environment variables:
 
 ```python
-from backend_common.config.app_config import AppConfig
+from dcc_backend_common.config.app_config import AppConfig
 
 config = AppConfig.from_env()
 print(config)  # secrets are redacted in __str__

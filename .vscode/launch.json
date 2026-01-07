@@ -11,7 +11,7 @@
             "module": "fastapi",
             "args": [
                 "dev",
-                "./src/backend_common/app.py"
+                "./src/dcc_backend_common/app.py"
             ],
             "jinja": true
         },

@@ -3,7 +3,7 @@ from typing import TypedDict
 from fastapi import status
 from fastapi.exceptions import HTTPException
 
-from backend_common.fastapi_error_handling.error_codes import ApiErrorCodes
+from dcc_backend_common.fastapi_error_handling.error_codes import ApiErrorCodes
 
 
 class ErrorResponse(TypedDict, total=False):

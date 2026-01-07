@@ -1,8 +1,8 @@
 [project]
-name = "backend-common"
+name = "dcc-backend-common"
 version = "0.0.1"
 description = "Common python code used in out backend services."
-authors = [{name = "Data Competence Center Basel-Stadt", email = "dcc@bs.ch" },{ name = "Tobias Bollinger", email = "tobias.bollinger@bs.ch" }]
+authors = [{name = "Data Competence Center Basel-Stadt", email = "dcc@bs.ch" },{ name = "Tobias Bollinger", email = "tobias.bollinger@bs.ch" },{ name = "Yanick Schraner", email = "yanick.schraner@bs.ch" }]
 readme = "README.md"
 keywords = ['python']
 requires-python = ">=3.12,<4.0"
@@ -34,9 +34,9 @@ fastapi = [
 ]
 
 [project.urls]
-Homepage = "https://DCC-BS.github.io/backend-common/"
+Homepage = "https://github.com/dcc-bs"
 Repository = "https://github.com/DCC-BS/backend-common"
-Documentation = "https://DCC-BS.github.io/backend-common/"
+Documentation = "https://DCC-BS.github.io/documentation/"
 
 [dependency-groups]
 dev = [
@@ -44,16 +44,15 @@ dev = [
     "pytest>=8.3.4",
     "pre-commit>=4.5.0",
     "tox-uv>=1.11.3",
-    "pyrefly>=0.4.3",
-
     "ruff>=0.9.2",
-
-    "rich>=13.9.4"
+    "rich>=13.9.4",
+    "ty>=0.0.9",
 ]
 
 [build-system]
-requires = ["hatchling","version-pioneer>=0.0.13"]
+requires = ["hatchling"]
 build-backend = "hatchling.build"
+
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
