@@ -3,10 +3,14 @@ on:
     workflow_dispatch:
 jobs:
     publish:
-        uses: DCC-BS/ci-workflows/.github/workflows/pypi-publish.yml@v7
+        name: Publish to PyPI
+        runs-on: ubuntu-latest
         permissions:
             id-token: write
             contents: write
-        with:
-            python_version: "3.12"
-            create_release_tag: true
+        steps:
+            - name: Publish package to PyPI
+              uses: DCC-BS/ci-workflows/.github/workflows/pypi-publish.yml@v7
+              with:
+                  python_version: "3.12"
+                  create_release_tag: true
