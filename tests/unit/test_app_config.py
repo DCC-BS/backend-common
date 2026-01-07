@@ -1,6 +1,6 @@
 import pytest
 
-from backend_common.config import AppConfig, AppConfigError, log_secret
+from dcc_backend_common.config import AppConfig, AppConfigError, log_secret
 
 
 def _set_env(monkeypatch: pytest.MonkeyPatch, **values: str) -> None:

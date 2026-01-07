@@ -50,7 +50,7 @@ The library provides Kubernetes-ready health check endpoints that follow best pr
 
 ```python
 from fastapi import FastAPI
-from backend_common.fastapi_health_probes import health_probe_router
+from dcc_backend_common.fastapi_health_probes import health_probe_router
 
 app = FastAPI()
 
@@ -149,7 +149,7 @@ If a dependency fails:
 Load strongly-typed configuration from environment variables:
 
 ```python
-from backend_common.config.app_config import AppConfig
+from dcc_backend_common.config.app_config import AppConfig
 
 config = AppConfig.from_env()
 print(config)  # secrets are redacted in __str__
