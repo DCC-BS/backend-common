@@ -2,11 +2,11 @@ name: LLM Doc Update Trigger
 
 on:
     pull_request:
-        types: [closed]
+        types: [labeled]
 
 jobs:
     llm-doc-update:
-        if: github.event.pull_request.merged == true
+        if: contains(github.event.pull_request.labels, 'llm-doc-update')
 
         uses: DCC-BS/ci-workflows/.github/workflows/llm-doc-update-conditional.yml@v7
         with:
