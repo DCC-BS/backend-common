@@ -22,9 +22,9 @@ def edit_distance_metric(
     Returns:
         The score (1 - ((WER + CER) / 2)) between 0 and 1, where 1 is the best score.
     """
-    if key not in pred.keys():
+    if key not in pred:
         raise ValueError(f"Key {key} not found in pred. Available keys: {pred.keys()}")
-    if key not in gold.keys():
+    if key not in gold:
         raise ValueError(f"Key {key} not found in gold. Available keys: {gold.keys()}")
     predicted = pred[key]
     reference = gold[key]

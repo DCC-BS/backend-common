@@ -17,7 +17,7 @@ def test_from_env_success(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_env(
         monkeypatch,
         CLIENT_URL="http://client",
-        HMAC_SECRET="secret",  # nosec B105
+        HMAC_SECRET="secret",  # nosec B105  # noqa: S106
         OPENAI_API_KEY="key",  # nosec B105
         LLM_URL="http://llm",
         DOCLING_URL="http://docling",
@@ -28,7 +28,7 @@ def test_from_env_success(monkeypatch: pytest.MonkeyPatch) -> None:
     config = AppConfig.from_env()
 
     assert config.client_url == "http://client"
-    assert config.hmac_secret == "secret"  # nosec B105
+    assert config.hmac_secret == "secret"  # nosec B105  # noqa: S105
     assert "****" in str(config)
 
 
