@@ -1,12 +1,45 @@
 name: Publish to PyPI
+
 on:
     workflow_dispatch:
+
 permissions:
-    id-token: write
-    contents: write
+    id-token: write # Required for Trusted Publishing
+    contents: write # Required for creating the git tag
+
 jobs:
     publish:
-        uses: DCC-BS/ci-workflows/.github/workflows/pypi-publish.yml@v7
-        with:
-            python_version: "3.12"
-            create_release_tag: true
+        name: Build and publish
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v5
+              with:
+                  enable-cache: true
+
+            - name: Set up Python
+              run: uv python install 3.12
+
+            - name: Tag and push
+              run: |
+                  VERSION=$(uv version --short)
+                  TAG="v$VERSION"
+                  git config --global user.name "github-actions[bot]"
+                  git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+                  if git rev-parse "$TAG" >/dev/null 2>&1 || git ls-remote --tags origin | grep -q "refs/tags/$TAG"; then
+                    echo "Tag $TAG already exists."
+                  else
+                    git tag "$TAG"
+                    git push origin "$TAG"
+                  fi
+
+            - name: Build package
+              run: uv build
+
+            - name: Publish package
+              run: uv publish
