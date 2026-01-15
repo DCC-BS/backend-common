@@ -10,7 +10,7 @@ check: ## Run code quality tools.
 	@uv lock --locked
 	@echo "🚀 Linting code: Running pre-commit"
 	@uv run pre-commit run -a
-	@echo "🚀 Static type checking: Running ty"
+	@echo "🚀 Static type checking: Running ty type check"
 	@uv run ty check
 
 .PHONY: test
