@@ -5,7 +5,14 @@ from dcc_backend_common.logger import get_logger
 
 
 class UsageTrackingService:
+    """
+    UsageTrackingService is responsible for tracking and logging usage events compatible for OpenSearch functionality.
+    """
+
     def __init__(self, hmac_secret: str):
+        """
+        Initializes the UsageTrackingService with the given HMAC secret.
+        """
         self.hmac_secret = hmac_secret
 
     def get_pseudonymized_user_id(self, user_id: str | None) -> str:
@@ -26,7 +33,4 @@ class UsageTrackingService:
 
         pseudonym_id = self.get_pseudonymized_user_id(user_id)
 
-        logger.info(
-            "app_event",
-            extra={"event": f"{module}.{func}", "pseudonym_id": pseudonym_id, **kwargs},
-        )
+        logger.info("app_event", action_name=f"{module}.{func}", pseudonym_id=pseudonym_id, **kwargs)
