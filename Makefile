@@ -10,8 +10,8 @@ check: ## Run code quality tools.
 	@uv lock --locked
 	@echo "🚀 Linting code: Running pre-commit"
 	@uv run pre-commit run -a
-	@echo "🚀 Static type checking: Running pyrefly"
-	@uv run pyrefly check ./src/dcc_backend_common
+	@echo "🚀 Static type checking: Running ty type check"
+	@uv run ty check
 
 .PHONY: test
 test: ## Test the code with pytest
