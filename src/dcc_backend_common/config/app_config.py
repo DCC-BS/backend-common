@@ -34,6 +34,12 @@ class AbstractAppConfig(BaseModel):
         raise NotImplementedError("Subclasses must implement __str__.")
 
 
+class LlmConfig(AbstractAppConfig):
+    llm_model: str = Field(description="The model for LLM API")
+    llm_url: str = Field(description="The URL for LLM API")
+    llm_api_key: str = Field(description="The API key for authenticating with OpenAI")
+
+
 class AppConfig(AbstractAppConfig):
     client_url: str = Field(description="The URL for the client application")
     hmac_secret: str = Field(description="The secret key for HMAC authentication")

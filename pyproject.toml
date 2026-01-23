@@ -19,18 +19,23 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "datasets>=4.4.1",
-    "dspy>=3.0.4",
+    "datasets>=4.5.0",
+    "dspy>=3.1.2",
     "jiwer>=4.0.0",
     "pydantic>=2.12.5",
-    "python-dotenv>=1.0.1",
-    "structlog>=25.1.0",
+    "python-dotenv>=1.2.1",
+    "structlog>=25.5.0",
 ]
 
 [project.optional-dependencies]
 fastapi = [
-    "aiohttp>=3.13.2",
-    "fastapi>=0.115,<1.0",
+    "aiohttp>=3.13.3",
+    "fastapi>=0.128.0,<1.0",
+]
+
+pydantic_ai = [
+    "pydantic-ai>=1.46.0",
+    "pydantic-ai-slim[openai]>=1.46.0",
 ]
 
 [project.urls]
