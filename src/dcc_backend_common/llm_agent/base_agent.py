@@ -1,6 +1,5 @@
 """Base agent with comprehensive pydantic AI features."""
 
-import json
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Callable, Sequence
 from typing import Any, TypedDict
@@ -62,6 +61,9 @@ class BaseAgent[DepsType, OutputType](ABC):
             return None
 
         postfix = "" if self._enable_thinking else " /no_think"
+
+        if isinstance(prompt, str):
+            return f"{prompt}{postfix}"
         return [*list(prompt), postfix]
 
     def _log_result[TOutput](self, result: AgentRunResult[TOutput] | StreamedRunResult[DepsType, TOutput]):
@@ -104,7 +106,7 @@ class BaseAgent[DepsType, OutputType](ABC):
 
         result = await self._agent.run(user_prompt=prompt, deps=deps, **kwargs)
 
-        context = PostprocessingContext(isParial=False, index=0)
+        context = PostprocessingContext(is_parial=False, index=0)
 
         self._log_result(result)
         return self._postprocess(result.output, context)
@@ -122,7 +124,7 @@ class BaseAgent[DepsType, OutputType](ABC):
         async with self._agent.run_stream(user_prompt=prompt, deps=deps, **kwargs) as result:
             i = 0
             async for chunk in result.stream_text(delta=delta):
-                context = PostprocessingContext(isParial=True, index=i)
+                context = PostprocessingContext(is_parial=True, index=i)
                 yield self._postprocess(chunk, context)
                 i += 1
 
@@ -141,11 +143,9 @@ class BaseAgent[DepsType, OutputType](ABC):
             list: list[T]
 
         async with self._agent.run_stream(user_prompt=prompt, output_type=Container, deps=deps, **kwargs) as result:
-            logger.debug(json.dumps(result.all_messages()))
-
             i = 0
             async for chunk in result.stream_output():
-                context = PostprocessingContext(isParial=True, index=i)
+                context = PostprocessingContext(is_parial=True, index=i)
                 yield self._postprocess(chunk["list"][-1], context)
                 i += 1
 
@@ -163,7 +163,7 @@ class BaseAgent[DepsType, OutputType](ABC):
         async with self._agent.run_stream(user_prompt=prompt, deps=deps, **kwargs) as result:
             i = 0
             async for chunk in result.stream_output():
-                context = PostprocessingContext(isParial=True, index=i)
+                context = PostprocessingContext(is_parial=True, index=i)
                 yield self._postprocess(chunk, context)
                 i += 1
 
@@ -179,12 +179,12 @@ class BaseAgent[DepsType, OutputType](ABC):
 
         async for event in self._agent.run_stream_events(user_prompt=prompt, deps=deps, **kwargs):
             if isinstance(event, AgentRunResultEvent):
-                context = PostprocessingContext(isParial=False, index=0)
+                context = PostprocessingContext(is_parial=False, index=0)
                 event.result.output = self._postprocess(event.result.output, context)
                 self._log_result(event.result)
                 yield event
             elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
-                context = PostprocessingContext(isParial=True, index=event.index)
+                context = PostprocessingContext(is_parial=True, index=event.index)
                 event.delta.content_delta = self._postprocess(event.delta.content_delta, context)
                 yield event
             else:

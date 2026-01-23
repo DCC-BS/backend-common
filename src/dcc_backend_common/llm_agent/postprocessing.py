@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 class PostprocessingContext(BaseModel):
     index: int
-    isParial: bool
+    is_parial: bool
 
 
 def trim_text(text: Any, context: PostprocessingContext) -> Any:
@@ -16,7 +16,7 @@ def trim_text(text: Any, context: PostprocessingContext) -> Any:
     if not isinstance(text, str):
         raise TypeError("Input must be a string")
 
-    if context.isParial and context.index != 0:
+    if context.is_parial and context.index != 0:
         return text
 
     return text.lstrip()
