@@ -172,7 +172,7 @@ cd backend-common
 2. Install development dependencies:
 
 ```bash
-uv sync --group dev --extra fastapi  # include FastAPI extras for local dev
+uv sync --group dev --all-extras  # include all extras for local dev
 ```
 
 ### Running Tests
