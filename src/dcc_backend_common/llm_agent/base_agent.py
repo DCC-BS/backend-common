@@ -119,16 +119,17 @@ class BaseAgent[DepsType, OutputType](ABC):
         **kwargs: Any,
     ) -> AsyncGenerator[str, None]:
         """Stream text output with optional delta parameter and postprocessing."""
-        prompt = self.process_prompt(user_prompt, deps)
+        generator = self.run_stream_events(user_prompt=user_prompt, deps=deps, **kwargs)
 
-        async with self._agent.run_stream(user_prompt=prompt, deps=deps, **kwargs) as result:
-            i = 0
-            async for chunk in result.stream_text(delta=delta):
-                context = PostprocessingContext(is_parial=True, index=i)
-                yield self._postprocess(chunk, context)
-                i += 1
+        result_text: str = ""
 
-            self._log_result(result)
+        async for event in generator:
+            if isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
+                if not delta:
+                    result_text += event.delta.content_delta
+                    yield result_text
+                else:
+                    yield event.delta.content_delta
 
     async def stream_list[T](
         self,
@@ -141,6 +142,13 @@ class BaseAgent[DepsType, OutputType](ABC):
 
         class Container(TypedDict):
             list: list[T]
+
+        async for event in self.run_stream_events(user_prompt=user_prompt, deps=deps, **kwargs):
+            if isinstance(event, AgentRunResultEvent):
+                container: Container = event.result.output  # type: ignore[assignment]
+                for i, item in enumerate(container["list"]):
+                    context = PostprocessingContext(is_parial=False, index=i)
+                    yield self._postprocess(item, context)
 
         async with self._agent.run_stream(user_prompt=prompt, output_type=Container, deps=deps, **kwargs) as result:
             i = 0
