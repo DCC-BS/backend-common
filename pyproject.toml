@@ -1,6 +1,6 @@
 [project]
 name = "dcc-backend-common"
-version = "0.1.2"
+version = "0.1.3"
 description = "Common python code used in out backend services."
 authors = [{name = "Data Competence Center Basel-Stadt", email = "dcc@bs.ch" },{ name = "Tobias Bollinger", email = "tobias.bollinger@bs.ch" },{ name = "Yanick Schraner", email = "yanick.schraner@bs.ch" }]
 readme = "README.md"
@@ -42,6 +42,10 @@ pydantic_ai = [
 Homepage = "https://github.com/dcc-bs"
 Repository = "https://github.com/DCC-BS/backend-common"
 Documentation = "https://DCC-BS.github.io/documentation/"
+
+[project.scripts]
+generate-env-example = "dcc_backend_common.config.generate_env_example:main"
+sync-env-with-example = "dcc_backend_common.config.sync_env_with_example:main"
 
 [dependency-groups]
 dev = [
