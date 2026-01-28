@@ -43,6 +43,10 @@ Homepage = "https://github.com/dcc-bs"
 Repository = "https://github.com/DCC-BS/backend-common"
 Documentation = "https://DCC-BS.github.io/documentation/"
 
+[project.scripts]
+generate-env-example = "dcc_backend_common.config.generate_env_example:main"
+sync-env-with-example = "dcc_backend_common.config.sync_env_with_example:main"
+
 [dependency-groups]
 dev = [
     "coverage>=7.6.12",
