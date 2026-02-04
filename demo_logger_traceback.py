@@ -2,10 +2,10 @@
 
 Usage:
     # Test focused mode (default):
-    uv run python test_logger_traceback.py
+    uv run python demo_logger_traceback.py
 
     # Test rich mode (full locals):
-    uv run python test_logger_traceback.py rich
+    uv run python demo_logger_traceback.py rich
 """
 
 import os
