@@ -231,6 +231,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - **Data Competence Center Basel-Stadt** - [dcc@bs.ch](mailto:dcc@bs.ch)
 - **Tobias Bollinger** - [tobias.bollinger@bs.ch](mailto:tobias.bollinger@bs.ch)
+- **Yanick Schraner** - [yanick.schraner@bs.ch](mailto:yanick.schraner@bs.ch)
 
 ## Links
 
