@@ -1,5 +1,6 @@
 # dcc-backend-common
 
+[![PyPI version](https://img.shields.io/pypi/v/dcc-backend-common.svg)](https://pypi.org/project/dcc-backend-common/)
 [![Commit activity](https://img.shields.io/github/commit-activity/m/DCC-BS/backend-common)](https://img.shields.io/github/commit-activity/m/DCC-BS/backend-common)
 [![License](https://img.shields.io/github/license/DCC-BS/backend-common)](https://img.shields.io/github/license/DCC-BS/backend-common)
 
