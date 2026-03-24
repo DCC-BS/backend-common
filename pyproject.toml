@@ -1,6 +1,6 @@
 [project]
 name = "dcc-backend-common"
-version = "0.1.4"
+version = "0.1.5"
 description = "Common python code used in out backend services."
 authors = [{name = "Data Competence Center Basel-Stadt", email = "dcc@bs.ch" },{ name = "Tobias Bollinger", email = "tobias.bollinger@bs.ch" },{ name = "Yanick Schraner", email = "yanick.schraner@bs.ch" }]
 readme = "README.md"
@@ -20,7 +20,6 @@ classifiers = [
 ]
 dependencies = [
     "datasets>=4.5.0",
-    "dspy>=3.1.2",
     "jiwer>=4.0.0",
     "pydantic>=2.12.5",
     "python-dotenv>=1.2.1",
