@@ -7,6 +7,8 @@ from typing import Any, TypedDict
 import aiohttp
 from fastapi import APIRouter, HTTPException, Response
 
+logger = logging.getLogger(__name__)
+
 
 class ServiceDependency(TypedDict):
     name: str
@@ -75,11 +77,13 @@ def health_probe_router(service_dependencies: list[ServiceDependency]) -> APIRou
                                 )
                     except aiohttp.ClientError as e:
                         health_check["checks"][service["name"]] = f"error: {e!s}"
+                        logger.error("Health check failed for '%s': %s", service["name"], e)
                         raise
 
         except Exception as e:
             # If a critical dependency fails, we must return a 503.
             # This tells K8s to stop sending traffic to this specific pod.
+            logger.error("Readiness probe returning unhealthy. checks=%s error=%s", health_check["checks"], e)
             response.status_code = HTTPStatus.SERVICE_UNAVAILABLE
             return {"status": "unhealthy", "checks": health_check["checks"], "error": str(e)}
         else:
