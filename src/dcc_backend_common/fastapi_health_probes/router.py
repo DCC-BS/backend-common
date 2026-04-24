@@ -71,19 +71,33 @@ def health_probe_router(service_dependencies: list[ServiceDependency]) -> APIRou
                                 health_check["checks"][service["name"]] = "healthy"
                             else:
                                 health_check["checks"][service["name"]] = f"unhealthy (status: {svc_response.status})"
+
+                                details = ""
+                                try:
+                                    text = await svc_response.text()
+                                    details += f"{text} "
+                                except Exception:
+                                    logger.exception(
+                                        "Cannot read the text",
+                                        {
+                                            "serivice_name": service["name"],
+                                            "health_check_url": service["health_check_url"],
+                                        },
+                                    )
+
                                 raise HTTPException(
                                     status_code=HTTPStatus.SERVICE_UNAVAILABLE,
-                                    detail=f"{service['name']} returned status {svc_response.status}",
+                                    detail=f"{details}{service['name']} returned status {svc_response.status}",
                                 )
                     except aiohttp.ClientError as e:
                         health_check["checks"][service["name"]] = f"error: {e!s}"
-                        logger.error("Health check failed for '%s': %s", service["name"], e)
+                        logger.exception("Health check failed for '%s': %s", service["name"])
                         raise
 
         except Exception as e:
             # If a critical dependency fails, we must return a 503.
             # This tells K8s to stop sending traffic to this specific pod.
-            logger.error("Readiness probe returning unhealthy. checks=%s error=%s", health_check["checks"], e)
+            logger.exception("Readiness probe returning unhealthy. checks=%s error=%s", health_check["checks"])
             response.status_code = HTTPStatus.SERVICE_UNAVAILABLE
             return {"status": "unhealthy", "checks": health_check["checks"], "error": str(e)}
         else:
