@@ -91,13 +91,16 @@ def health_probe_router(service_dependencies: list[ServiceDependency]) -> APIRou
                                 )
                     except aiohttp.ClientError as e:
                         health_check["checks"][service["name"]] = f"error: {e!s}"
-                        logger.exception("Health check failed for '%s': %s", service["name"])
+                        logger.error(f"Health check failed for {service['name']}", e)
                         raise
 
         except Exception as e:
             # If a critical dependency fails, we must return a 503.
             # This tells K8s to stop sending traffic to this specific pod.
-            logger.exception("Readiness probe returning unhealthy. checks=%s error=%s", health_check["checks"])
+            logger.error(
+                "Readiness probe returning unhealthy. checks=%s error=%s",
+                {"health_checks": health_check["checks"], "error": e},
+            )
             response.status_code = HTTPStatus.SERVICE_UNAVAILABLE
             return {"status": "unhealthy", "checks": health_check["checks"], "error": str(e)}
         else:
