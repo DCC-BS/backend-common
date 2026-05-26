@@ -97,10 +97,7 @@ def health_probe_router(service_dependencies: list[ServiceDependency]) -> APIRou
         except Exception as e:
             # If a critical dependency fails, we must return a 503.
             # This tells K8s to stop sending traffic to this specific pod.
-            logger.error(
-                "Readiness probe returning unhealthy. checks=%s error=%s",
-                {"health_checks": health_check["checks"], "error": e},
-            )
+            logger.error(f"Readiness probe returning unhealthy. checks={health_check['checks']} error={e}")
             response.status_code = HTTPStatus.SERVICE_UNAVAILABLE
             return {"status": "unhealthy", "checks": health_check["checks"], "error": str(e)}
         else:
