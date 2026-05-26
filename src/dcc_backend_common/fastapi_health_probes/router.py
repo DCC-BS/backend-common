@@ -78,11 +78,7 @@ def health_probe_router(service_dependencies: list[ServiceDependency]) -> APIRou
                                     details += f"{text} "
                                 except Exception:
                                     logger.exception(
-                                        "Cannot read the text",
-                                        {
-                                            "serivice_name": service["name"],
-                                            "health_check_url": service["health_check_url"],
-                                        },
+                                        f"Cannot read the text for service={service['name']} url={service['health_check_url']}"
                                     )
 
                                 raise HTTPException(
@@ -94,6 +90,8 @@ def health_probe_router(service_dependencies: list[ServiceDependency]) -> APIRou
                         logger.error(f"Health check failed for {service['name']}: {e}")
                         raise
 
+        except HTTPException:
+            raise
         except Exception as e:
             # If a critical dependency fails, we must return a 503.
             # This tells K8s to stop sending traffic to this specific pod.
