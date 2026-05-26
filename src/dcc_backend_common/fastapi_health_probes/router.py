@@ -2,10 +2,10 @@ import logging
 import time
 from datetime import UTC, datetime
 from http import HTTPStatus
-from typing import Any, TypedDict
+from typing import TypedDict
 
 import aiohttp
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, Response
 
 logger = logging.getLogger(__name__)
 
@@ -16,21 +16,32 @@ class ServiceDependency(TypedDict):
     api_key: str | None
 
 
+async def _check_service(session: aiohttp.ClientSession, service: ServiceDependency) -> str:
+    headers = {"Authorization": f"Bearer {service['api_key']}"} if service["api_key"] else {}
+    try:
+        async with session.get(service["health_check_url"], headers=headers) as resp:
+            if resp.status == 200:
+                return "healthy"
+            try:
+                body = (await resp.text()).strip()
+            except Exception:
+                logger.exception(f"Cannot read response body for service={service['name']}")
+                body = ""
+            return f"unhealthy (status: {resp.status}){f': {body}' if body else ''}"
+    except Exception as e:
+        logger.error(f"Health check failed for {service['name']}: {e}", exc_info=True)
+        return f"error: {e!s}"
+
+
 def health_probe_router(service_dependencies: list[ServiceDependency]) -> APIRouter:
     router = APIRouter(prefix="/health")
 
     START_TIME = time.time()
 
-    # Disable logging for health check endpoints
     class EndpointFilter(logging.Filter):
         def filter(self, record: logging.LogRecord) -> bool:
-            # Endpoints to exclude from logging
-            skip_paths = {"/health"}
+            return "/health" not in record.getMessage()
 
-            # Extract the request path from the log message
-            return all(skip_path not in record.getMessage() for skip_path in skip_paths)
-
-    # Configure the filter
     logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
 
     @router.get("/liveness")
@@ -51,55 +62,15 @@ def health_probe_router(service_dependencies: list[ServiceDependency]) -> APIRou
         * K8s Action: If this fails, traffic stops sending to this pod.
         * Rule: Check critical dependencies here.
         """
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5.0)) as session:
+            checks = {service["name"]: await _check_service(session, service) for service in service_dependencies}
 
-        health_check: dict[str, Any] = {
-            "status": "ready",
-            "checks": {service["name"]: "unknown" for service in service_dependencies},
-        }
+        if all(v == "healthy" for v in checks.values()):
+            return {"status": "ready", "checks": checks}
 
-        try:
-            timeout = aiohttp.ClientTimeout(total=5.0)
-
-            for service in service_dependencies:
-                async with aiohttp.ClientSession(
-                    timeout=timeout,
-                    headers={"Authorization": f"Bearer {service['api_key']}"} if service["api_key"] else {},
-                ) as session:
-                    try:
-                        async with session.get(service["health_check_url"]) as svc_response:
-                            if svc_response.status == 200:
-                                health_check["checks"][service["name"]] = "healthy"
-                            else:
-                                health_check["checks"][service["name"]] = f"unhealthy (status: {svc_response.status})"
-
-                                details = ""
-                                try:
-                                    text = await svc_response.text()
-                                    details += f"{text} "
-                                except Exception:
-                                    logger.exception(
-                                        f"Cannot read the text for service={service['name']} url={service['health_check_url']}"
-                                    )
-
-                                raise HTTPException(
-                                    status_code=HTTPStatus.SERVICE_UNAVAILABLE,
-                                    detail=f"{details}{service['name']} returned status {svc_response.status}",
-                                )
-                    except aiohttp.ClientError as e:
-                        health_check["checks"][service["name"]] = f"error: {e!s}"
-                        logger.error(f"Health check failed for {service['name']}: {e}")
-                        raise
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            # If a critical dependency fails, we must return a 503.
-            # This tells K8s to stop sending traffic to this specific pod.
-            logger.error(f"Readiness probe returning unhealthy. checks={health_check['checks']} error={e}")
-            response.status_code = HTTPStatus.SERVICE_UNAVAILABLE
-            return {"status": "unhealthy", "checks": health_check["checks"], "error": str(e)}
-        else:
-            return health_check
+        logger.warning(f"Readiness probe unhealthy: {checks}")
+        response.status_code = HTTPStatus.SERVICE_UNAVAILABLE
+        return {"status": "unhealthy", "checks": checks}
 
     @router.get("/startup")
     async def startup_probe():
