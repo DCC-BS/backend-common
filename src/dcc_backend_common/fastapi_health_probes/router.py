@@ -91,7 +91,7 @@ def health_probe_router(service_dependencies: list[ServiceDependency]) -> APIRou
                                 )
                     except aiohttp.ClientError as e:
                         health_check["checks"][service["name"]] = f"error: {e!s}"
-                        logger.error(f"Health check failed for {service['name']}", e)
+                        logger.error(f"Health check failed for {service['name']}: {e}")
                         raise
 
         except Exception as e:
