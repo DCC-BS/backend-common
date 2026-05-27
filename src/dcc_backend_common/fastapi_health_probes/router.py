@@ -28,9 +28,17 @@ async def _check_service(session: aiohttp.ClientSession, service: ServiceDepende
                 logger.exception(f"Cannot read response body for service={service['name']}")
                 body = ""
             return f"unhealthy (status: {resp.status}){f': {body}' if body else ''}"
+    except TimeoutError:
+        msg = f"timed out after 5s ({service['health_check_url']})"
+        logger.error(f"Health check failed for {service['name']}: {msg}")
+        return f"error: {msg}"
     except Exception as e:
-        logger.error(f"Health check failed for {service['name']}: {e}", exc_info=True)
-        return f"error: {e!s}"
+        detail = str(e) or type(e).__name__
+        logger.error(
+            f"Health check failed for {service['name']} ({service['health_check_url']}): {type(e).__name__}: {detail}",
+            exc_info=True,
+        )
+        return f"error: {type(e).__name__}: {detail}"
 
 
 def health_probe_router(service_dependencies: list[ServiceDependency]) -> APIRouter:
