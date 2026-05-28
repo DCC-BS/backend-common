@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Callable, Sequence
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
 from pydantic_ai import (
     Agent,
@@ -15,7 +15,7 @@ from pydantic_ai import (
 from pydantic_ai.agent import NoneType
 from pydantic_ai.messages import TextPartDelta
 from pydantic_ai.models import Model
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.result import StreamedRunResult
 
@@ -29,6 +29,9 @@ logger = get_logger(__name__)
 type UserPrompt = str | Sequence[UserContent] | None
 type Preprocessor = Callable[[Any, PostprocessingContext], Any]
 
+# Sentinel context for non-streaming (complete) output.
+_FINAL = PostprocessingContext(is_partial=False, index=0)
+
 
 class BaseAgent[DepsType, OutputType](ABC):
     """Abstract base class for reusable pydantic AI agents with full feature support."""
@@ -36,15 +39,23 @@ class BaseAgent[DepsType, OutputType](ABC):
     def __init__(
         self,
         config: LlmConfig,
-        deps_type: type[DepsType] = NoneType,  # type: ignore[invalid-parameter-default]
-        output_type: type[OutputType] = str,  # type: ignore[invalid-parameter-default]
+        deps_type: type[DepsType] | None = None,
+        output_type: type[OutputType] | None = None,
         enable_thinking: bool = False,
     ):
         self.config = config
         self._enable_thinking = enable_thinking
 
-        self.deps_type = deps_type
-        self.output_type = output_type
+        self.deps_type: type[Any] = deps_type if deps_type is not None else NoneType
+        self.output_type: type[Any] = output_type if output_type is not None else str
+
+        self._model_settings: OpenAIChatModelSettings = {
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": enable_thinking}}
+        }
+
+        # Cache once; depends only on output_type (immutable after __init__).
+        self._postprocessors: list[Preprocessor] = self._get_postprocessors()
+        self._stream_postprocessors: list[Preprocessor] = self._get_stream_postprocessors()
 
         self._model = OpenAIChatModel(
             config.llm_model,
@@ -56,18 +67,39 @@ class BaseAgent[DepsType, OutputType](ABC):
 
         self._agent = self.create_agent(self._model)
 
-    def process_prompt(self, prompt: UserPrompt, deps: DepsType):
-        if prompt is None:
-            return None
+    def _get_postprocessors(self) -> list[Preprocessor]:
+        """Override to customise the postprocessing pipeline."""
+        postprocessors: list[Preprocessor] = [replace_eszett]
+        if self.output_type is str:
+            postprocessors.append(trim_text)
+        return postprocessors
 
-        postfix = "" if self._enable_thinking else " /no_think"
+    def _get_stream_postprocessors(self) -> list[Preprocessor]:
+        """Override for per-delta streaming postprocessors. Default: all except trim_text."""
+        return [p for p in self._postprocessors if p is not trim_text]
 
-        if isinstance(prompt, str):
-            return f"{prompt}{postfix}"
-        return [*list(prompt), postfix]
+    def process_prompt(self, prompt: UserPrompt, deps: DepsType | None) -> UserPrompt:
+        """Override to transform the prompt before it is sent to the model."""
+        return prompt
+
+    def _extract_model_settings(self, kwargs: dict[str, Any]) -> OpenAIChatModelSettings:
+        """Pop model_settings from kwargs and deep-merge with the instance-level settings."""
+        user_ms = kwargs.pop("model_settings", {})
+        merged: dict[str, Any] = {**self._model_settings, **user_ms}
+        # Deep-merge extra_body so chat_template_kwargs (enable_thinking) is never silently dropped.
+        if "extra_body" in user_ms and "extra_body" in self._model_settings:
+            instance_body = cast(dict[str, Any], self._model_settings["extra_body"])
+            user_body = cast(dict[str, Any], user_ms["extra_body"])
+            merged["extra_body"] = {**instance_body, **user_body}
+        return cast(OpenAIChatModelSettings, merged)
+
+    def _postprocess(self, output: Any) -> Any:
+        for processor in self._postprocessors:
+            output = processor(output, _FINAL)
+        return output
 
     def _log_result[TOutput](self, result: AgentRunResult[TOutput] | StreamedRunResult[DepsType, TOutput]):
-        usage = result.usage()
+        usage = result.usage
 
         logger.info(
             "llm_call",
@@ -78,115 +110,100 @@ class BaseAgent[DepsType, OutputType](ABC):
                     "total_tokens": usage.total_tokens,
                     "tool_calls": usage.tool_calls,
                     "requests": usage.requests,
-                    "details": result.usage().details,
+                    "details": usage.details,
                 },
                 "finish_reason": result.response.finish_reason,
             },
         )
 
-    def _get_postprocessors(self) -> list[Preprocessor]:
-        postprocessors: list[Preprocessor] = [replace_eszett]
-
-        if self.output_type is str:
-            postprocessors.append(trim_text)
-
-        return postprocessors
-
-    def _postprocess(self, output: Any, context: PostprocessingContext) -> Any:
-        for processor in self._get_postprocessors():
-            output = processor(output, context)
-        return output
-
     @abstractmethod
     def create_agent(self, model: Model) -> Agent[DepsType, OutputType]: ...
 
-    async def run(self, user_prompt: UserPrompt = None, deps: DepsType = None, **kwargs: Any) -> OutputType:  # type: ignore[invalid-parameter-default]
-        """Run the agent and return structured output."""
-        prompt = self.process_prompt(user_prompt, deps)
-
-        result = await self._agent.run(user_prompt=prompt, deps=deps, **kwargs)
-
-        context = PostprocessingContext(is_parial=False, index=0)
-
+    async def run(self, user_prompt: UserPrompt = None, deps: DepsType | None = None, **kwargs: Any) -> OutputType:
+        """Run the agent and return the postprocessed output."""
+        ms = self._extract_model_settings(kwargs)
+        result = await self._agent.run(  # type: ignore
+            user_prompt=self.process_prompt(user_prompt, deps), deps=deps, model_settings=ms, **kwargs
+        )
         self._log_result(result)
-        return self._postprocess(result.output, context)
+        return self._postprocess(result.output)
 
     async def run_stream_text(
         self,
         user_prompt: UserPrompt = None,
-        deps: DepsType = None,  # type: ignore[invalid-parameter-default]
+        deps: DepsType | None = None,
         delta: bool = True,
         **kwargs: Any,
     ) -> AsyncGenerator[str, None]:
-        """Stream text output with optional delta parameter and postprocessing."""
+        """Stream raw text deltas. Postprocessing is applied to the final assembled result event."""
         generator = self.run_stream_events(user_prompt=user_prompt, deps=deps, **kwargs)
 
         result_text: str = ""
 
         async for event in generator:
             if isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
+                chunk = event.delta.content_delta
+                for p in self._stream_postprocessors:
+                    chunk = p(chunk, _FINAL)
                 if not delta:
-                    result_text += event.delta.content_delta
+                    result_text += chunk
                     yield result_text
                 else:
-                    yield event.delta.content_delta
+                    yield chunk
 
     async def stream_list[T](
         self,
         user_prompt: UserPrompt = None,
-        deps: DepsType = None,  # type: ignore[invalid-parameter-default]
+        deps: DepsType | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[T, None]:
-        """Stream list items one-by-one from a TypedDict container with postprocessing."""
-        prompt = self.process_prompt(user_prompt, deps)
+        """Stream list items progressively. Each emission is the latest state of the last item; callers receive partial updates as each item is built, then new emissions as each subsequent item starts."""
+        ms = self._extract_model_settings(kwargs)
 
         class Container(TypedDict):
             list: list[T]
 
-        async with self._agent.run_stream(user_prompt=prompt, output_type=Container, deps=deps, **kwargs) as result:
-            i = 0
+        async with self._agent.run_stream(
+            user_prompt=self.process_prompt(user_prompt, deps),
+            output_type=Container,
+            deps=deps,
+            model_settings=ms,
+            **kwargs,
+        ) as result:
             async for chunk in result.stream_output():
-                context = PostprocessingContext(is_parial=True, index=i)
-                yield self._postprocess(chunk["list"][-1], context)
-                i += 1
+                if chunk["list"]:
+                    yield self._postprocess(chunk["list"][-1])
 
             self._log_result(result)
 
     async def run_stream_output(
         self,
         user_prompt: UserPrompt = None,
-        deps: DepsType = None,  # type: ignore[invalid-parameter-default]
+        deps: DepsType | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[Any, None]:
-        """Stream full structured output with postprocessing."""
-        prompt = self.process_prompt(user_prompt, deps)
+        """Stream raw structured output chunks as they are validated."""
+        ms = self._extract_model_settings(kwargs)
 
-        async with self._agent.run_stream(user_prompt=prompt, deps=deps, **kwargs) as result:
-            i = 0
+        async with self._agent.run_stream(
+            user_prompt=self.process_prompt(user_prompt, deps), deps=deps, model_settings=ms, **kwargs
+        ) as result:
             async for chunk in result.stream_output():
-                context = PostprocessingContext(is_parial=True, index=i)
-                yield self._postprocess(chunk, context)
-                i += 1
+                yield self._postprocess(chunk)
 
             self._log_result(result)
 
     async def run_stream_events(
         self,
         user_prompt: UserPrompt = None,
-        deps: DepsType = None,  # type: ignore[invalid-parameter-default]
+        deps: DepsType | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[AgentStreamEvent | AgentRunResultEvent[OutputType]]:
-        prompt = self.process_prompt(user_prompt, deps)
+        """Stream raw pydantic-ai events. No postprocessing; use run() for a postprocessed final result."""
+        ms = self._extract_model_settings(kwargs)
 
-        async for event in self._agent.run_stream_events(user_prompt=prompt, deps=deps, **kwargs):
-            if isinstance(event, AgentRunResultEvent):
-                context = PostprocessingContext(is_parial=False, index=0)
-                event.result.output = self._postprocess(event.result.output, context)
-                self._log_result(event.result)
-                yield event
-            elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
-                context = PostprocessingContext(is_parial=True, index=event.index)
-                event.delta.content_delta = self._postprocess(event.delta.content_delta, context)
-                yield event
-            else:
+        async with self._agent.run_stream_events(  # type: ignore
+            user_prompt=self.process_prompt(user_prompt, deps), deps=deps, model_settings=ms, **kwargs
+        ) as stream:
+            async for event in stream:
                 yield event

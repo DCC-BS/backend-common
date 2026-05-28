@@ -1,4 +1,6 @@
-from collections.abc import Callable
+import inspect
+from collections.abc import AsyncGenerator, Callable
+from typing import Any
 
 from dcc_backend_common.llm_agent.debugging.event_debugger import create_event_debugger
 from dcc_backend_common.logger import get_logger
@@ -6,10 +8,21 @@ from dcc_backend_common.logger import get_logger
 logger = get_logger(__name__)
 
 
-def withDebbugger[TRetrun](fn: Callable[..., TRetrun], name: str | None = None) -> Callable[..., TRetrun]:
+def withDebbugger(fn: Callable[..., Any], name: str | None = None) -> Callable[..., Any]:
     name = name or "UnnamedAgent"
 
-    def wrapper(*args, **kwargs) -> TRetrun:
-        return fn(*args, **kwargs, event_stream_handler=create_event_debugger(name))
+    if inspect.isasyncgenfunction(fn):
 
-    return wrapper
+        async def gen_wrapper(*args: Any, **kwargs: Any) -> AsyncGenerator:
+            async for item in fn(*args, **kwargs, event_stream_handler=create_event_debugger(name)):
+                yield item
+
+        return gen_wrapper
+
+    if not inspect.iscoroutinefunction(fn):
+        raise TypeError(f"withDebbugger requires an async function or async generator function, got {fn!r}")
+
+    async def coro_wrapper(*args: Any, **kwargs: Any) -> Any:
+        return await fn(*args, **kwargs, event_stream_handler=create_event_debugger(name))  # type: ignore[misc]
+
+    return coro_wrapper
