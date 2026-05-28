@@ -29,12 +29,12 @@ dependencies = [
 [project.optional-dependencies]
 fastapi = [
     "aiohttp>=3.13.3",
-    "fastapi>=0.128.0,<1.0",
+    "fastapi>=0.136.0,<1.0",
 ]
 
 pydantic_ai = [
-    "pydantic-ai>=1.46.0",
-    "pydantic-ai-slim[openai]>=1.46.0",
+    "pydantic-ai>=1.103.0",
+    "pydantic-ai-slim[openai]>=1.103.0",
 ]
 
 [project.urls]
