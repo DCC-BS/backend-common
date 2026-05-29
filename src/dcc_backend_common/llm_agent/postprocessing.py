@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 class PostprocessingContext(BaseModel):
     index: int
-    is_parial: bool
+    is_partial: bool
 
 
 def trim_text(text: Any, context: PostprocessingContext) -> Any:
@@ -16,7 +16,7 @@ def trim_text(text: Any, context: PostprocessingContext) -> Any:
     if not isinstance(text, str):
         raise TypeError("Input must be a string")
 
-    if context.is_parial and context.index != 0:
+    if context.is_partial and context.index != 0:
         return text
 
     return text.lstrip()
@@ -27,10 +27,8 @@ def replace_eszett(obj: Any, _: PostprocessingContext) -> Any:
     if isinstance(obj, str):
         return obj.replace("ß", "ss")
     elif isinstance(obj, BaseModel):
-        for field_name in type(obj).model_fields:
-            value = getattr(obj, field_name)
-            setattr(obj, field_name, replace_eszett(value, _))
-        return obj
+        updates = {f: replace_eszett(getattr(obj, f), _) for f in type(obj).model_fields}
+        return obj.model_copy(update=updates)
     elif isinstance(obj, Mapping):
         return {k: replace_eszett(v, _) for k, v in obj.items()}
     elif isinstance(obj, list):
