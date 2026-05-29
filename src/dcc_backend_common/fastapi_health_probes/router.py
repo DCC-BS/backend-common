@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 from datetime import UTC, datetime
@@ -22,15 +23,18 @@ async def _check_service(session: aiohttp.ClientSession, service: ServiceDepende
         async with session.get(service["health_check_url"], headers=headers) as resp:
             if resp.status == 200:
                 return "healthy"
-            try:
-                body = (await resp.text()).strip()
-            except Exception:
-                logger.exception(f"Cannot read response body for service={service['name']}")
-                body = ""
-            return f"unhealthy (status: {resp.status}){f': {body}' if body else ''}"
+            return f"unhealthy (status: {resp.status})"
+    except TimeoutError:
+        msg = f"timed out after 5s ({service['health_check_url']})"
+        logger.error(f"Health check failed for {service['name']}: {msg}")
+        return f"error: {msg}"
     except Exception as e:
-        logger.error(f"Health check failed for {service['name']}: {e}", exc_info=True)
-        return f"error: {e!s}"
+        detail = str(e) or type(e).__name__
+        logger.error(
+            f"Health check failed for {service['name']} ({service['health_check_url']}): {type(e).__name__}: {detail}",
+            exc_info=True,
+        )
+        return f"error: {type(e).__name__}: {detail}"
 
 
 def health_probe_router(service_dependencies: list[ServiceDependency]) -> APIRouter:
@@ -63,7 +67,8 @@ def health_probe_router(service_dependencies: list[ServiceDependency]) -> APIRou
         * Rule: Check critical dependencies here.
         """
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5.0)) as session:
-            checks = {service["name"]: await _check_service(session, service) for service in service_dependencies}
+            results = await asyncio.gather(*[_check_service(session, service) for service in service_dependencies])
+        checks = {service["name"]: result for service, result in zip(service_dependencies, results, strict=False)}
 
         if all(v == "healthy" for v in checks.values()):
             return {"status": "ready", "checks": checks}
