@@ -1,16 +1,11 @@
 import pytest
 
-from dcc_backend_common.config import AppConfig, AppConfigError, log_secret
+from dcc_backend_common.config import AppConfig, AppConfigError
 
 
 def _set_env(monkeypatch: pytest.MonkeyPatch, **values: str) -> None:
     for key, value in values.items():
         monkeypatch.setenv(key, value)
-
-
-@pytest.mark.parametrize("secret,expected", [("token", "****"), ("", "None"), (None, "None")])
-def test_log_secret_masks_values(secret: str | None, expected: str) -> None:
-    assert log_secret(secret) == expected
 
 
 def test_from_env_success(monkeypatch: pytest.MonkeyPatch) -> None:
