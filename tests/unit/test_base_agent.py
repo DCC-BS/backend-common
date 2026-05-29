@@ -6,8 +6,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pydantic_ai import AgentRunResultEvent, PartDeltaEvent
-from pydantic_ai.messages import TextPartDelta
+from pydantic_ai import AgentRunResultEvent, PartDeltaEvent, PartStartEvent
+from pydantic_ai.messages import TextPart, TextPartDelta
 
 from dcc_backend_common.llm_agent.base_agent import BaseAgent
 from dcc_backend_common.llm_agent.postprocessing import replace_eszett, trim_text
@@ -15,6 +15,10 @@ from dcc_backend_common.llm_agent.postprocessing import replace_eszett, trim_tex
 
 def make_text_delta(content: str, part_index: int = 0) -> PartDeltaEvent:
     return PartDeltaEvent(index=part_index, delta=TextPartDelta(content_delta=content))
+
+
+def make_text_start(content: str, part_index: int = 0) -> PartStartEvent:
+    return PartStartEvent(index=part_index, part=TextPart(content=content))
 
 
 async def fake_stream_events(*events: Any) -> AsyncIterator[Any]:
@@ -271,6 +275,28 @@ class TestStreaming:
         self._mock_stream(agent, *events)
         chunks = [c async for c in agent.run_stream_text("prompt")]
         assert chunks == ["  Hello", " world"]
+
+    async def test_part_start_content_emitted(self, agent):
+        # First text piece arrives in PartStartEvent; it must not be dropped.
+        events = [make_text_start("Da"), make_text_delta(" etwas"), make_text_delta(" buggy")]
+        result = await self._collect_text_deltas(agent, *events)
+        assert result == ["Da", " etwas", " buggy"]
+
+    async def test_empty_part_start_skipped(self, agent):
+        # An empty PartStartEvent (no initial content) must not yield an empty chunk.
+        events = [make_text_start(""), make_text_delta("Hello"), make_text_delta(" world")]
+        result = await self._collect_text_deltas(agent, *events)
+        assert result == ["Hello", " world"]
+
+    async def test_part_start_postprocessed(self, agent):
+        events = [make_text_start("Straße"), make_text_delta(" gut")]
+        result = await self._collect_text_deltas(agent, *events)
+        assert result == ["Strasse", " gut"]
+
+    async def test_part_start_accumulated_when_not_delta(self, agent):
+        self._mock_stream(agent, make_text_start("Da"), make_text_delta(" etwas"))
+        chunks = [c async for c in agent.run_stream_text("prompt", delta=False)]
+        assert chunks == ["Da", "Da etwas"]
 
 
 class TestWithDebbugger:

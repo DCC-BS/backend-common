@@ -129,6 +129,68 @@ async def test_stream_text_accumulated_grows_monotonically():
 
 @requires_llm
 @pytest.mark.integration
+async def test_stream_text_does_not_drop_first_chunk():
+    """Regression: the first text piece arrives in a PartStartEvent, not a PartDeltaEvent.
+
+    Joining the streamed deltas must reproduce the full model output, including its
+    first token. A "repeat exactly" prompt keeps the output deterministic enough to
+    compare against the final (raw) result of the same run.
+    """
+    config = _llm_config()
+    assert config is not None
+    agent = SimpleAgent(config, enable_thinking=False)
+
+    sentence = "Da etwas buggy oder geht hier nichts"
+    prompt = f"Repeat exactly this sentence and nothing else: {sentence}"
+
+    chunks: list[str] = []
+    final_output = ""
+    async for event in agent.run_stream_events(prompt):
+        if isinstance(event, AgentRunResultEvent):
+            final_output = event.result.output
+        else:
+            from pydantic_ai import PartDeltaEvent, PartStartEvent
+            from pydantic_ai.messages import TextPart, TextPartDelta
+
+            if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
+                if event.part.content:
+                    chunks.append(event.part.content)
+            elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
+                chunks.append(event.delta.content_delta)
+
+    # The very first text piece (carried by PartStartEvent) must be present.
+    assert len(chunks) > 0
+    joined = "".join(chunks)
+    # No leading content lost: reconstructed stream equals the final raw output.
+    assert joined.strip() == final_output.strip()
+    # And the first word survived (the exact symptom of the original bug).
+    assert joined.strip().split()[0] == final_output.strip().split()[0]
+
+
+@requires_llm
+@pytest.mark.integration
+async def test_stream_text_join_matches_nonstream_run():
+    """The concatenation of run_stream_text deltas reproduces the full answer.
+
+    Directly guards against the streamed output missing its leading chunk.
+    """
+    config = _llm_config()
+    assert config is not None
+    agent = SimpleAgent(config, enable_thinking=False)
+
+    sentence = "Hallo Welt dies ist ein Test"
+    prompt = f"Repeat exactly this sentence and nothing else: {sentence}"
+
+    chunks = [chunk async for chunk in agent.run_stream_text(prompt)]
+    assert len(chunks) > 0
+    joined = "".join(chunks).strip()
+    # Full sentence reproduced, including the first word.
+    assert joined.split()[0] == sentence.split()[0]
+    assert sentence.split()[0] in joined
+
+
+@requires_llm
+@pytest.mark.integration
 async def test_stream_list_yields_progressive_items():
     config = _llm_config()
     assert config is not None
