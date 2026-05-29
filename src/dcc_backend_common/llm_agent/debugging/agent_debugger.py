@@ -14,7 +14,9 @@ def withDebbugger(fn: Callable[..., Any], name: str | None = None) -> Callable[.
     if inspect.isasyncgenfunction(fn):
 
         async def gen_wrapper(*args: Any, **kwargs: Any) -> AsyncGenerator:
-            async for item in fn(*args, **kwargs, event_stream_handler=create_event_debugger(name)):
+            if "event_stream_handler" not in kwargs:
+                kwargs["event_stream_handler"] = create_event_debugger(name)
+            async for item in fn(*args, **kwargs):
                 yield item
 
         return gen_wrapper
@@ -23,6 +25,8 @@ def withDebbugger(fn: Callable[..., Any], name: str | None = None) -> Callable[.
         raise TypeError(f"withDebbugger requires an async function or async generator function, got {fn!r}")
 
     async def coro_wrapper(*args: Any, **kwargs: Any) -> Any:
-        return await fn(*args, **kwargs, event_stream_handler=create_event_debugger(name))  # type: ignore[misc]
+        if "event_stream_handler" not in kwargs:
+            kwargs["event_stream_handler"] = create_event_debugger(name)
+        return await fn(*args, **kwargs)  # type: ignore[misc]
 
     return coro_wrapper

@@ -115,7 +115,8 @@ class TestInit:
         assert trim_text not in a._postprocessors
 
     def test_get_postprocessors_override_respected(self, config):
-        sentinel = lambda x, _: x
+        def sentinel(x, _):
+            return x
 
         class CustomAgent(BaseAgent[None, str]):
             def create_agent(self, model: Any) -> Any:
@@ -150,7 +151,7 @@ class TestInit:
 
         mock_result = MagicMock()
         mock_result.output = "ok"
-        mock_result.usage.return_value = MagicMock(
+        mock_result.usage = MagicMock(
             input_tokens=1, output_tokens=1, total_tokens=2, tool_calls=0, requests=1, details={}
         )
         mock_result.response = MagicMock(finish_reason="stop")
@@ -260,9 +261,9 @@ class TestStreaming:
     async def test_run_stream_events_yields_result_event_raw(self, agent):
         run_result_event = make_run_result_event("  Straße")
         self._mock_stream(agent, run_result_event)
-        async for event in agent.run_stream_events("prompt"):
-            if isinstance(event, AgentRunResultEvent):
-                assert event.result.output == "  Straße"  # raw, not postprocessed
+        events = [e async for e in agent.run_stream_events("prompt")]
+        assert len(events) == 1
+        assert events[0].result.output == "  Straße"  # raw, not postprocessed
 
     async def test_run_stream_text_yields_raw_deltas(self, agent):
         run_result_event = make_run_result_event("Hello world")

@@ -309,7 +309,7 @@ LLM_URL=... LLM_API_KEY=... LLM_MODEL=... uv run pytest tests/integration/ -m in
 
 ```bash
 make check          # lock check + pre-commit + ty type check
-uv run pytest       # unit tests
+uv run pytest tests/unit  # unit tests
 ```
 
 ## Releasing

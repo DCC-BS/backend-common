@@ -135,7 +135,7 @@ class BaseAgent[DepsType, OutputType](ABC):
         delta: bool = True,
         **kwargs: Any,
     ) -> AsyncGenerator[str, None]:
-        """Stream raw text deltas. Postprocessing is applied to the final assembled result event."""
+        """Stream text chunks. _stream_postprocessors (e.g. replace_eszett, but not trim_text) are applied per chunk. AgentRunResultEvent is not postprocessed here."""
         generator = self.run_stream_events(user_prompt=user_prompt, deps=deps, **kwargs)
 
         result_text: str = ""
