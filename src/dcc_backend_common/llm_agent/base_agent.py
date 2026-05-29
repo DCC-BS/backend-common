@@ -10,10 +10,11 @@ from pydantic_ai import (
     AgentRunResultEvent,
     AgentStreamEvent,
     PartDeltaEvent,
+    PartStartEvent,
     UserContent,
 )
 from pydantic_ai.agent import NoneType
-from pydantic_ai.messages import TextPartDelta
+from pydantic_ai.messages import TextPart, TextPartDelta
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
 from pydantic_ai.providers.openai import OpenAIProvider
@@ -141,15 +142,24 @@ class BaseAgent[DepsType, OutputType](ABC):
         result_text: str = ""
 
         async for event in generator:
-            if isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
+            # The first piece of a text part arrives in PartStartEvent (event.part.content);
+            # subsequent pieces arrive as PartDeltaEvent. Both must be emitted.
+            chunk: str | None = None
+            if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
+                chunk = event.part.content
+            elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
                 chunk = event.delta.content_delta
-                for p in self._stream_postprocessors:
-                    chunk = p(chunk, _FINAL)
-                if not delta:
-                    result_text += chunk
-                    yield result_text
-                else:
-                    yield chunk
+
+            if not chunk:
+                continue
+
+            for p in self._stream_postprocessors:
+                chunk = p(chunk, _FINAL)
+            if not delta:
+                result_text += chunk
+                yield result_text
+            else:
+                yield chunk
 
     async def stream_list[T](
         self,
