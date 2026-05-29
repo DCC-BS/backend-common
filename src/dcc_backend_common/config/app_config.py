@@ -21,8 +21,9 @@ def get_env_or_throw(env_name: str) -> str:
 def log_secret(secret: str | None) -> str:
     if not secret:
         return "None"
-
-    return secret[:2] + "*" * max(0, len(secret) - 2)
+    if len(secret) <= 4:
+        return "****"
+    return secret[:4] + "*" * (len(secret) - 4)
 
 
 class AbstractAppConfig(BaseModel):
