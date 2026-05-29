@@ -14,9 +14,14 @@ check: ## Run code quality tools.
 	@uv run ty check
 
 .PHONY: test
-test: ## Test the code with pytest
+test: ## Run unit tests
 	@echo "🚀 Testing code: Running pytest"
-	@uv run python -m pytest --doctest-modules
+	@uv run python -m pytest tests/unit --doctest-modules
+
+.PHONY: integration
+integration: ## Run integration tests (requires .env)
+	@echo "🚀 Running integration tests"
+	@uv run --env-file .env python -m pytest tests/integration --doctest-modules
 
 .PHONY: build
 build: clean-build ## Build wheel file
