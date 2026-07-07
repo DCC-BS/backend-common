@@ -34,7 +34,7 @@ fastapi = [
 
 pydantic_ai = [
     "pydantic-ai>=1.107.0,<2.0.0",
-    "pydantic-ai-slim[openai]>=1.107.0,<2.0.0",
+    "pydantic-ai-slim[openai]>=2.0.0,<2.1.0",
 ]
 
 [project.urls]
