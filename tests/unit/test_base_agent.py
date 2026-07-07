@@ -159,11 +159,11 @@ class TestInit:
             input_tokens=1, output_tokens=1, total_tokens=2, tool_calls=0, requests=1, details={}
         )
         mock_result.response = MagicMock(finish_reason="stop")
-        a._agent.run = AsyncMock(return_value=mock_result)  # type: ignore
+        a._agent.run = AsyncMock(return_value=mock_result)
 
         await a.run("hello")
         assert calls == ["hello"]
-        forwarded = a._agent.run.call_args[1]["user_prompt"]  # type: ignore
+        forwarded = a._agent.run.call_args[1]["user_prompt"]
         assert forwarded == "[wrapped] hello"
 
 
