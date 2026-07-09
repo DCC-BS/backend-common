@@ -6,12 +6,21 @@ Run with:
 
 import os
 
+import httpx
 import pytest
 from pydantic import BaseModel
-from pydantic_ai import Agent, AgentRunResultEvent, AgentStreamEvent
+from pydantic_ai import Agent, AgentRunResultEvent, AgentStreamEvent, PartDeltaEvent, PartStartEvent
+from pydantic_ai.exceptions import ModelAPIError
+from pydantic_ai.messages import ModelResponse, ThinkingPart, ThinkingPartDelta
+from tenacity import RetryError
 
 from dcc_backend_common.config.app_config import LlmConfig
 from dcc_backend_common.llm_agent.base_agent import BaseAgent
+
+# A prompt that a reasoning model cannot answer without at least a few thinking tokens.
+REASONING_PROMPT = (
+    "A bat and a ball cost 1.10 together. The bat costs 1.00 more than the ball. What does the ball cost?"
+)
 
 
 def _llm_config() -> LlmConfig | None:
@@ -20,7 +29,13 @@ def _llm_config() -> LlmConfig | None:
     model = os.environ.get("LLM_MODEL")
     if not (url and key and model):
         return None
-    return LlmConfig(llm_url=url, llm_api_key=key, llm_model=model)
+    return LlmConfig(
+        llm_url=url,
+        llm_api_key=key,
+        llm_model=model,
+        llm_timeout=int(os.environ.get("LLM_TIMEOUT", "120")),
+        llm_max_retries=int(os.environ.get("LLM_MAX_RETRIES", "2")),
+    )
 
 
 requires_llm = pytest.mark.skipif(
@@ -41,6 +56,27 @@ class WordList(BaseModel):
 class WordListAgent(BaseAgent[None, WordList]):
     def create_agent(self, model):
         return Agent(model=model, output_type=WordList, system_prompt="Return structured data as instructed.")
+
+
+async def _run_capturing_messages(agent: BaseAgent, prompt: str):
+    """Non-streaming run that keeps the AgentRunResult.
+
+    ``BaseAgent.run`` returns only the postprocessed output, so reasoning parts are
+    unreachable through it. Go through the wrapped agent with the exact model settings
+    BaseAgent built, so the model/profile/thinking wiring under test is the one exercised.
+    """
+    model_settings = agent._extract_model_settings({})
+    return await agent._agent.run(user_prompt=prompt, model_settings=model_settings)
+
+
+def _thinking_parts(messages) -> list[ThinkingPart]:
+    return [
+        part
+        for message in messages
+        if isinstance(message, ModelResponse)
+        for part in message.parts
+        if isinstance(part, ThinkingPart)
+    ]
 
 
 @requires_llm
@@ -235,3 +271,169 @@ async def test_run_stream_events_contains_stream_and_result_events():
     assert len(result_events) == 1
     assert isinstance(result_events[0].result.output, str)
     assert len(result_events[0].result.output) > 0
+
+
+# --- Reasoning / thinking ----------------------------------------------------
+
+
+@requires_llm
+@pytest.mark.integration
+async def test_thinking_enabled_produces_thinking_parts_non_streaming():
+    """enable_thinking=True must surface reasoning as ThinkingPart in the response."""
+    config = _llm_config()
+    assert config is not None
+    agent = SimpleAgent(config, enable_thinking=True)
+
+    result = await _run_capturing_messages(agent, REASONING_PROMPT)
+
+    thinking = _thinking_parts(result.all_messages())
+    assert len(thinking) > 0, "no ThinkingPart returned — reasoning_content was not parsed"
+    assert any(part.content.strip() for part in thinking), "ThinkingPart present but empty"
+
+
+@requires_llm
+@pytest.mark.integration
+async def test_thinking_disabled_produces_no_thinking_parts_non_streaming():
+    config = _llm_config()
+    assert config is not None
+    agent = SimpleAgent(config, enable_thinking=False)
+
+    result = await _run_capturing_messages(agent, REASONING_PROMPT)
+
+    assert _thinking_parts(result.all_messages()) == []
+
+
+@requires_llm
+@pytest.mark.integration
+async def test_thinking_enabled_produces_thinking_events_streaming():
+    """Reasoning must arrive as ThinkingPart (PartStartEvent) and ThinkingPartDelta."""
+    config = _llm_config()
+    assert config is not None
+    agent = SimpleAgent(config, enable_thinking=True)
+
+    thinking_chunks: list[str] = []
+    result_event: AgentRunResultEvent | None = None
+
+    async for event in agent.run_stream_events(REASONING_PROMPT):
+        if isinstance(event, AgentRunResultEvent):
+            result_event = event
+        elif isinstance(event, PartStartEvent) and isinstance(event.part, ThinkingPart):
+            thinking_chunks.append(event.part.content)
+        elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, ThinkingPartDelta):
+            thinking_chunks.append(event.delta.content_delta or "")
+
+    assert "".join(thinking_chunks).strip(), "no reasoning content streamed"
+    assert result_event is not None
+    # The final result also carries the accumulated ThinkingPart.
+    assert _thinking_parts(result_event.result.all_messages())
+
+
+@requires_llm
+@pytest.mark.integration
+async def test_thinking_disabled_produces_no_thinking_events_streaming():
+    config = _llm_config()
+    assert config is not None
+    agent = SimpleAgent(config, enable_thinking=False)
+
+    async for event in agent.run_stream_events(REASONING_PROMPT):
+        if isinstance(event, PartStartEvent):
+            assert not isinstance(event.part, ThinkingPart)
+        elif isinstance(event, PartDeltaEvent):
+            assert not isinstance(event.delta, ThinkingPartDelta)
+
+
+@requires_llm
+@pytest.mark.integration
+async def test_run_stream_text_excludes_reasoning_when_thinking_enabled():
+    """run_stream_text yields answer text only — reasoning must not leak into the stream."""
+    config = _llm_config()
+    assert config is not None
+    agent = SimpleAgent(config, enable_thinking=True)
+
+    chunks = [chunk async for chunk in agent.run_stream_text(REASONING_PROMPT)]
+    joined = "".join(chunks)
+
+    assert joined.strip(), "thinking enabled swallowed the answer text"
+    assert "<think>" not in joined
+    assert "</think>" not in joined
+
+
+@requires_llm
+@pytest.mark.integration
+async def test_run_with_thinking_returns_answer_not_reasoning():
+    """BaseAgent.run() returns the postprocessed answer, never the reasoning trace."""
+    config = _llm_config()
+    assert config is not None
+    agent = SimpleAgent(config, enable_thinking=True)
+
+    output = await agent.run(REASONING_PROMPT)
+
+    assert isinstance(output, str)
+    assert output.strip()
+    assert "<think>" not in output
+    assert output == output.lstrip()
+
+
+@requires_llm
+@pytest.mark.integration
+async def test_structured_output_with_thinking_enabled():
+    """Reasoning tokens must not corrupt JSON schema output validation."""
+    config = _llm_config()
+    assert config is not None
+    agent = WordListAgent(config, output_type=WordList, enable_thinking=True)
+
+    result = await agent.run("Give me a list of exactly 3 colours")
+
+    assert isinstance(result, WordList)
+    assert len(result.words) == 3
+
+
+@requires_llm
+@pytest.mark.integration
+async def test_reasoning_effort_set_only_when_thinking_enabled():
+    config = _llm_config()
+    assert config is not None
+
+    assert SimpleAgent(config, enable_thinking=True)._model_settings["openai_reasoning_effort"] == "medium"
+    # A literal None would be serialised as `reasoning_effort: null` and rejected by vLLM.
+    assert "openai_reasoning_effort" not in SimpleAgent(config, enable_thinking=False)._model_settings
+
+
+# --- Timeout / retry transport ----------------------------------------------
+
+
+@requires_llm
+@pytest.mark.integration
+async def test_timeout_from_config_reaches_model_settings():
+    config = _llm_config()
+    assert config is not None
+    agent = SimpleAgent(config, enable_thinking=False)
+    assert agent._model_settings["timeout"] == config.llm_timeout
+
+
+@pytest.mark.integration
+async def test_unreachable_endpoint_reraises_underlying_transport_error():
+    """AsyncTenacityTransport uses reraise=True: the httpx error surfaces, not a tenacity RetryError.
+
+    pydantic-ai maps it to ModelAPIError, so assert on the exception chain instead.
+    """
+    config = LlmConfig(
+        llm_url="http://127.0.0.1:1/v1",  # nothing listens on port 1
+        llm_api_key="key",
+        llm_model="does-not-matter",
+        llm_timeout=2,
+        llm_max_retries=0,  # single attempt: keeps the test fast
+    )
+    agent = SimpleAgent(config, enable_thinking=False)
+
+    with pytest.raises(ModelAPIError) as exc_info:
+        await agent.run("hello")
+
+    causes = []
+    err: BaseException | None = exc_info.value
+    while err is not None:
+        causes.append(err)
+        err = err.__cause__
+
+    assert any(isinstance(e, httpx.TransportError) for e in causes), f"transport error swallowed: {causes}"
+    assert not any(isinstance(e, RetryError) for e in causes), "tenacity RetryError leaked; reraise=True is not set"

@@ -5,9 +5,12 @@ from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from pydantic_ai import AgentRunResultEvent, PartDeltaEvent, PartStartEvent
-from pydantic_ai.messages import TextPart, TextPartDelta
+from pydantic_ai.messages import TextPart, TextPartDelta, ThinkingPart, ThinkingPartDelta
+from pydantic_ai.retries import AsyncTenacityTransport
+from tenacity import stop_after_attempt
 
 from dcc_backend_common.llm_agent.base_agent import BaseAgent
 from dcc_backend_common.llm_agent.postprocessing import replace_eszett, trim_text
@@ -19,6 +22,14 @@ def make_text_delta(content: str, part_index: int = 0) -> PartDeltaEvent:
 
 def make_text_start(content: str, part_index: int = 0) -> PartStartEvent:
     return PartStartEvent(index=part_index, part=TextPart(content=content))
+
+
+def make_thinking_start(content: str, part_index: int = 0) -> PartStartEvent:
+    return PartStartEvent(index=part_index, part=ThinkingPart(content=content))
+
+
+def make_thinking_delta(content: str, part_index: int = 0) -> PartDeltaEvent:
+    return PartDeltaEvent(index=part_index, delta=ThinkingPartDelta(content_delta=content))
 
 
 async def fake_stream_events(*events: Any) -> AsyncIterator[Any]:
@@ -36,11 +47,19 @@ def make_run_result_event(output: str) -> AgentRunResultEvent:
     return event
 
 
-def make_config(model: str = "test-model", url: str = "http://localhost", key: str = "key") -> Any:
+def make_config(
+    model: str = "test-model",
+    url: str = "http://localhost",
+    key: str = "key",
+    timeout: int = 30,
+    max_retries: int = 2,
+) -> Any:
     cfg = MagicMock()
     cfg.llm_model = model
     cfg.llm_url = url
     cfg.llm_api_key = key
+    cfg.llm_timeout = timeout
+    cfg.llm_max_retries = max_retries
     return cfg
 
 
@@ -79,10 +98,70 @@ def agent_thinking(config):
 
 class TestInit:
     def test_model_settings_thinking_disabled(self, agent):
-        assert agent._model_settings == {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+        assert agent._model_settings == {
+            "timeout": 30,
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+        }
 
     def test_model_settings_thinking_enabled(self, agent_thinking):
-        assert agent_thinking._model_settings == {"extra_body": {"chat_template_kwargs": {"enable_thinking": True}}}
+        assert agent_thinking._model_settings == {
+            "timeout": 30,
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": True}},
+            "openai_reasoning_effort": "medium",
+        }
+
+    def test_reasoning_effort_omitted_when_thinking_disabled(self, agent):
+        # A literal None would be serialised as `reasoning_effort: null`; the key must be absent.
+        assert "openai_reasoning_effort" not in agent._model_settings
+
+    def test_profile_marks_thinking_always_enabled(self, config):
+        with (
+            patch("dcc_backend_common.llm_agent.base_agent.OpenAIChatModel") as mock_model,
+            patch("dcc_backend_common.llm_agent.base_agent.OpenAIProvider"),
+        ):
+            ConcreteAgent(config, enable_thinking=True)
+        profile = mock_model.call_args[1]["profile"]
+        assert profile.thinking_always_enabled is True
+
+    def test_profile_thinking_not_always_enabled_when_disabled(self, config):
+        with (
+            patch("dcc_backend_common.llm_agent.base_agent.OpenAIChatModel") as mock_model,
+            patch("dcc_backend_common.llm_agent.base_agent.OpenAIProvider"),
+        ):
+            ConcreteAgent(config, enable_thinking=False)
+        profile = mock_model.call_args[1]["profile"]
+        assert profile.thinking_always_enabled is False
+
+    def test_provider_gets_retrying_http_client(self, config):
+        with (
+            patch("dcc_backend_common.llm_agent.base_agent.OpenAIChatModel"),
+            patch("dcc_backend_common.llm_agent.base_agent.OpenAIProvider") as mock_provider,
+        ):
+            ConcreteAgent(config)
+        client = mock_provider.call_args[1]["http_client"]
+        assert isinstance(client, httpx.AsyncClient)
+        assert isinstance(client._transport, AsyncTenacityTransport)
+
+    def test_retry_stop_is_max_retries_plus_one(self, config):
+        # N retries == N+1 total attempts.
+        with (
+            patch("dcc_backend_common.llm_agent.base_agent.OpenAIChatModel"),
+            patch("dcc_backend_common.llm_agent.base_agent.OpenAIProvider"),
+        ):
+            a = ConcreteAgent(make_config(max_retries=4))
+        transport = a._build_http_client()._transport
+        assert isinstance(transport, AsyncTenacityTransport)
+        stop = transport.config["stop"]
+        assert isinstance(stop, stop_after_attempt)
+        assert stop.max_attempt_number == 5
+
+    def test_http_client_timeout_from_config(self, config):
+        with (
+            patch("dcc_backend_common.llm_agent.base_agent.OpenAIChatModel"),
+            patch("dcc_backend_common.llm_agent.base_agent.OpenAIProvider"),
+        ):
+            a = ConcreteAgent(make_config(timeout=17))
+        assert a._build_http_client().timeout.read == 17
 
     def test_default_output_type_is_str(self, agent):
         assert agent.output_type is str
@@ -197,6 +276,18 @@ class TestExtractModelSettings:
         agent._extract_model_settings(kwargs)
         assert "model_settings" not in kwargs
 
+    def test_timeout_preserved_through_merge(self, agent):
+        result = agent._extract_model_settings({"model_settings": {"temperature": 0.5}})
+        assert result["timeout"] == 30
+
+    def test_reasoning_effort_preserved_through_merge(self, agent_thinking):
+        result = agent_thinking._extract_model_settings({"model_settings": {"temperature": 0.5}})
+        assert result["openai_reasoning_effort"] == "medium"
+
+    def test_reasoning_effort_overridable_by_caller(self, agent_thinking):
+        result = agent_thinking._extract_model_settings({"model_settings": {"openai_reasoning_effort": "high"}})
+        assert result["openai_reasoning_effort"] == "high"
+
 
 class TestPostprocess:
     def test_eszett_replaced(self, agent):
@@ -297,6 +388,30 @@ class TestStreaming:
         self._mock_stream(agent, make_text_start("Da"), make_text_delta(" etwas"))
         chunks = [c async for c in agent.run_stream_text("prompt", delta=False)]
         assert chunks == ["Da", "Da etwas"]
+
+    async def test_thinking_parts_not_yielded_as_text(self, agent):
+        # Reasoning arrives as ThinkingPart / ThinkingPartDelta; run_stream_text must ignore both.
+        events = [
+            make_thinking_start("Let me think"),
+            make_thinking_delta(" about it"),
+            make_text_start("The"),
+            make_text_delta(" answer"),
+        ]
+        result = await self._collect_text_deltas(agent, *events)
+        assert result == ["The", " answer"]
+
+    async def test_thinking_only_stream_yields_nothing(self, agent):
+        events = [make_thinking_start("hmm"), make_thinking_delta(" more")]
+        result = await self._collect_text_deltas(agent, *events)
+        assert result == []
+
+    async def test_run_stream_events_passes_thinking_events_through(self, agent):
+        # run_stream_events is the raw channel: reasoning must remain observable there.
+        events = [make_thinking_start("hmm"), make_text_start("hi")]
+        self._mock_stream(agent, *events)
+        received = [e async for e in agent.run_stream_events("prompt")]
+        assert isinstance(received[0].part, ThinkingPart)
+        assert received[0].part.content == "hmm"
 
 
 class TestWithDebbugger:

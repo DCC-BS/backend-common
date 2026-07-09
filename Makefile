@@ -21,7 +21,27 @@ test: ## Run unit tests
 .PHONY: integration
 integration: ## Run integration tests (requires .env)
 	@echo "🚀 Running integration tests"
-	@uv run --env-file .env python -m pytest tests/integration --doctest-modules
+	@uv run --env-file .env python -m pytest tests/integration --doctest-modules --logfire
+
+# Compose resolves its default .env relative to the compose file's directory, so the
+# repo-root .env must be passed explicitly to keep the container and the integration
+# tests reading the same LLM_PORT / LLM_MODEL values.
+COMPOSE := docker compose --env-file .env -f tests/integration/docker-compose.yml
+
+.PHONY: llm-up
+llm-up: ## Start vLLM docker container for integration tests (requires .env)
+	@test -f .env || { echo "❌ .env not found — copy .env.example to .env first"; exit 1; }
+	@echo "🚀 Starting vLLM docker container"
+	@$(COMPOSE) up -d
+
+.PHONY: llm-logs
+llm-logs: ## Follow the vLLM container logs
+	@$(COMPOSE) logs -f
+
+.PHONY: llm-down
+llm-down: ## Stop the vLLM docker container
+	@echo "🚀 Stopping vLLM docker container"
+	@$(COMPOSE) down
 
 .PHONY: build
 build: clean-build ## Build wheel file

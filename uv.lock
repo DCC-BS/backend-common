@@ -716,13 +716,16 @@ fastapi = [
     { name = "fastapi" },
 ]
 pydantic-ai = [
+    { name = "httpx" },
     { name = "pydantic-ai" },
     { name = "pydantic-ai-slim", extra = ["openai"] },
+    { name = "tenacity" },
 ]
 
 [package.dev-dependencies]
 dev = [
     { name = "coverage" },
+    { name = "logfire" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -737,18 +740,21 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'fastapi'", specifier = ">=3.13.3" },
     { name = "datasets", specifier = ">=4.5.0" },
     { name = "fastapi", marker = "extra == 'fastapi'", specifier = ">=0.136.0,<1.0" },
+    { name = "httpx", marker = "extra == 'pydantic-ai'", specifier = ">=0.27" },
     { name = "jiwer", specifier = ">=4.0.0" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "pydantic-ai", marker = "extra == 'pydantic-ai'", specifier = ">=1.107.0,<2.0.0" },
     { name = "pydantic-ai-slim", extras = ["openai"], marker = "extra == 'pydantic-ai'", specifier = ">=1.107.0,<2.0.0" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
     { name = "structlog", specifier = ">=25.5.0" },
+    { name = "tenacity", marker = "extra == 'pydantic-ai'", specifier = ">=8.0" },
 ]
 provides-extras = ["fastapi", "pydantic-ai"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "coverage", specifier = ">=7.6.12" },
+    { name = "logfire", specifier = ">=4.0.0" },
     { name = "pre-commit", specifier = ">=4.5.0" },
     { name = "pytest", specifier = ">=8.3.4" },
     { name = "pytest-asyncio", specifier = ">=0.24.0" },
