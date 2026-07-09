@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Callable, Sequence
 from typing import Any, TypedDict, cast
 
+import httpx
 from pydantic_ai import (
     Agent,
     AgentRunResult,
@@ -17,8 +18,11 @@ from pydantic_ai.agent import NoneType
 from pydantic_ai.messages import TextPart, TextPartDelta
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
+from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.result import StreamedRunResult
+from pydantic_ai.retries import AsyncTenacityTransport, RetryConfig, wait_retry_after
+from tenacity import retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from dcc_backend_common.config.app_config import LlmConfig
 from dcc_backend_common.logger import get_logger
@@ -50,23 +54,60 @@ class BaseAgent[DepsType, OutputType](ABC):
         self.deps_type: type[Any] = deps_type if deps_type is not None else NoneType
         self.output_type: type[Any] = output_type if output_type is not None else str
 
-        self._model_settings: OpenAIChatModelSettings = {
-            "extra_body": {"chat_template_kwargs": {"enable_thinking": enable_thinking}}
-        }
+        self._model_settings: OpenAIChatModelSettings = OpenAIChatModelSettings(
+            timeout=config.llm_timeout,
+            extra_body={"chat_template_kwargs": {"enable_thinking": enable_thinking}},
+        )
+        if enable_thinking:
+            self._model_settings["openai_reasoning_effort"] = "medium"
 
         # Cache once; depends only on output_type (immutable after __init__).
         self._postprocessors: list[Preprocessor] = self._get_postprocessors()
         self._stream_postprocessors: list[Preprocessor] = self._get_stream_postprocessors()
 
+        provider = OpenAIProvider(
+            base_url=config.llm_url,
+            api_key=config.llm_api_key,
+            http_client=self._build_http_client(),
+        )
+
+        profile = OpenAIModelProfile(
+            openai_chat_supports_multiple_system_messages=False,
+            openai_supports_strict_tool_definition=False,
+            supports_json_schema_output=True,
+            openai_responses_requires_function_call_status_none=True,
+            thinking_always_enabled=enable_thinking,
+        )
+
         self._model = OpenAIChatModel(
             config.llm_model,
-            provider=OpenAIProvider(
-                base_url=config.llm_url,
-                api_key=config.llm_api_key,
-            ),
+            provider=provider,
+            profile=profile,
         )
 
         self._agent = self.create_agent(self._model)
+
+    def _build_http_client(self) -> httpx.AsyncClient:
+        """httpx client with tenacity retries for transient vLLM / network errors.
+
+        Retries on connection/transport errors and non-2xx responses (incl. 429).
+        Honors the ``Retry-After`` header on rate limits, falling back to exponential
+        backoff. Retry count comes from ``config.llm_max_retries``.
+        """
+        transport = AsyncTenacityTransport(
+            config=RetryConfig(
+                retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError)),
+                wait=wait_retry_after(
+                    fallback_strategy=wait_exponential(multiplier=1, max=60),
+                    max_wait=300,
+                ),
+                # +1: N retries == N+1 total attempts.
+                stop=stop_after_attempt(self.config.llm_max_retries + 1),
+                reraise=True,
+            ),
+            validate_response=lambda r: r.raise_for_status(),
+        )
+        return httpx.AsyncClient(transport=transport, timeout=self.config.llm_timeout)
 
     def _get_postprocessors(self) -> list[Preprocessor]:
         """Override to customise the postprocessing pipeline."""
