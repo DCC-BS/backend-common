@@ -49,7 +49,7 @@ def create_event_debugger(name: str) -> EventStreamHandler:
             )
         elif isinstance(event, FunctionToolResultEvent):
             logger.debug(
-                f"[Tools] Tool call {event.tool_call_id!r} returned => {event.result.content}",
+                f"[Tools] Tool call {event.tool_call_id!r} returned => {event.part.content}",
                 agent=name,
                 extra=event,
             )

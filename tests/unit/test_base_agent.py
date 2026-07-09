@@ -121,7 +121,7 @@ class TestInit:
         ):
             ConcreteAgent(config, enable_thinking=True)
         profile = mock_model.call_args[1]["profile"]
-        assert profile.thinking_always_enabled is True
+        assert profile["thinking_always_enabled"] is True
 
     def test_profile_thinking_not_always_enabled_when_disabled(self, config):
         with (
@@ -130,7 +130,7 @@ class TestInit:
         ):
             ConcreteAgent(config, enable_thinking=False)
         profile = mock_model.call_args[1]["profile"]
-        assert profile.thinking_always_enabled is False
+        assert profile["thinking_always_enabled"] is False
 
     def test_provider_gets_retrying_http_client(self, config):
         with (
