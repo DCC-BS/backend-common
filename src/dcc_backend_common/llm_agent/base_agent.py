@@ -164,7 +164,7 @@ class BaseAgent[DepsType, OutputType](ABC):
     async def run(self, user_prompt: UserPrompt = None, deps: DepsType | None = None, **kwargs: Any) -> OutputType:
         """Run the agent and return the postprocessed output."""
         ms = self._extract_model_settings(kwargs)
-        result = await self._agent.run(  # type: ignore
+        result = await self._agent.run(  # ty: ignore[no-matching-overload]
             user_prompt=self.process_prompt(user_prompt, deps), deps=deps, model_settings=ms, **kwargs
         )
         self._log_result(result)
@@ -253,7 +253,7 @@ class BaseAgent[DepsType, OutputType](ABC):
         """Stream raw pydantic-ai events. No postprocessing; use run() for a postprocessed final result."""
         ms = self._extract_model_settings(kwargs)
 
-        async with self._agent.run_stream_events(  # type: ignore
+        async with self._agent.run_stream_events(  # ty: ignore[no-matching-overload]
             user_prompt=self.process_prompt(user_prompt, deps), deps=deps, model_settings=ms, **kwargs
         ) as stream:
             async for event in stream:
