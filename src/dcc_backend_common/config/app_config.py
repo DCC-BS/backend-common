@@ -21,8 +21,9 @@ def get_env_or_throw(env_name: str) -> str:
 def log_secret(secret: str | None) -> str:
     if not secret:
         return "None"
-
-    return secret[:2] + "*" * max(0, len(secret) - 2)
+    if len(secret) <= 4:
+        return "****"
+    return secret[:4] + "*" * (len(secret) - 4)
 
 
 class AbstractAppConfig(BaseModel):
@@ -41,6 +42,8 @@ class LlmConfig(AbstractAppConfig):
     llm_model: str = Field(description="The model for LLM API")
     llm_url: str = Field(description="The URL for LLM API")
     llm_api_key: str = Field(description="The API key for authenticating with OpenAI")
+    llm_timeout: int = Field(ge=0, description="The timeout for LLM API requests in seconds", default=300)
+    llm_max_retries: int = Field(ge=0, description="The maximum number of retries for LLM API requests", default=2)
 
 
 class AppConfig(AbstractAppConfig):
