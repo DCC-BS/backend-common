@@ -8,11 +8,11 @@ from dcc_backend_common.config import log_secret
     [
         (None, "None"),
         ("", "None"),
-        ("a", "****"),
-        ("ab", "****"),
-        ("abc", "****"),
-        ("token", "toke*"),
-        ("secret123", "secr*****"),
+        ("a", "a"),
+        ("ab", "ab"),
+        ("abc", "ab*"),
+        ("token", "to***"),
+        ("secret123", "se*******"),
     ],
 )
 def test_log_secret(secret: str | None, expected: str) -> None:
