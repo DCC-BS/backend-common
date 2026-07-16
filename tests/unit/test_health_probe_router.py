@@ -85,10 +85,10 @@ def harness(monkeypatch):
     monkeypatch.setattr(router_module, "logger", fake_logger)
     monkeypatch.setattr(router_module, "_monotonic", clock)
 
-    def build_app(script: dict[str, list[DependencyResult]], heartbeat_interval_s: float = 600.0) -> TestClient:
+    def build_app(script: dict[str, list[DependencyResult]]) -> TestClient:
         monkeypatch.setattr(router_module, "_check_dependency", ScriptedChecks(script))
         app = FastAPI()
-        app.include_router(health_probe_router(DEPS, heartbeat_interval_s=heartbeat_interval_s))
+        app.include_router(health_probe_router(DEPS))
         return TestClient(app)
 
     return SimpleNamespace(logger=fake_logger, clock=clock, build_app=build_app)
@@ -131,32 +131,29 @@ def test_first_failure_logged_then_suppressed_until_recovery(harness):
     assert r4.status_code == 200
 
 
-def test_heartbeat_fires_on_interval_while_still_failing(harness):
+def test_repeated_failures_stay_silent(harness):
     client = harness.build_app(
         {
             "svc-a": [fail("svc-a", "http:503")] * 4,
             "svc-b": [ok("svc-b")],
         },
-        heartbeat_interval_s=10.0,
     )
 
-    client.get("/health/readiness")  # t=0  -> first occurrence (error)
+    client.get("/health/readiness")  # first occurrence (error)
     harness.clock.advance(5)
-    client.get("/health/readiness")  # t=5  -> suppressed (< 10s)
+    client.get("/health/readiness")  # suppressed
     assert levels(harness.logger.calls) == ["error"]
 
-    harness.clock.advance(6)  # t=11
-    client.get("/health/readiness")  # t=11 -> heartbeat (>= 10s)
-    assert levels(harness.logger.calls) == ["error", "warning"]
-    assert harness.logger.calls[1][1] == "health check still failing"
-    assert harness.logger.calls[1][2]["probes_since_last_heartbeat"] == 2  # probes 2 and 3
+    harness.clock.advance(6)
+    client.get("/health/readiness")  # still suppressed
+    assert levels(harness.logger.calls) == ["error"]
 
-    harness.clock.advance(3)  # t=14 (< 10s since last heartbeat)
-    client.get("/health/readiness")  # -> suppressed again
-    assert levels(harness.logger.calls) == ["error", "warning"]
+    harness.clock.advance(3)
+    client.get("/health/readiness")  # still suppressed
+    assert levels(harness.logger.calls) == ["error"]
 
 
-def test_signature_change_logs_transition_then_new_first_occurrence(harness):
+def test_signature_change_logs_new_first_occurrence(harness):
     client = harness.build_app({
         "svc-a": [fail("svc-a", "http:503"), fail("svc-a", "ClientConnectorError", detail="error: refused")],
         "svc-b": [ok("svc-b")],
@@ -165,11 +162,8 @@ def test_signature_change_logs_transition_then_new_first_occurrence(harness):
     client.get("/health/readiness")
     client.get("/health/readiness")
 
-    assert levels(harness.logger.calls) == ["error", "warning", "error"]
-    assert harness.logger.calls[1][1] == "health check failure mode changed"
-    assert harness.logger.calls[1][2]["previous_signature"] == "http:503"
-    assert harness.logger.calls[1][2]["new_signature"] == "ClientConnectorError"
-    assert harness.logger.calls[2][2]["signature"] == "ClientConnectorError"
+    assert levels(harness.logger.calls) == ["error", "error"]
+    assert harness.logger.calls[1][2]["signature"] == "ClientConnectorError"
 
 
 def test_recovery_resets_state_so_next_failure_logs_again(harness):

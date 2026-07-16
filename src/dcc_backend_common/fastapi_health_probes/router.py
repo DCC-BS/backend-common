@@ -38,12 +38,33 @@ class _DependencyHealthState:
     """Per-dependency dedup state, kept only for the lifetime of the process."""
 
     signature: str | None = None
+    """Stable key identifying the current failure mode (see ``_error_signature``).
+
+    ``None`` means the dependency is currently healthy; a change between non-None
+    values triggers a fresh First Occurrence log.
+    """
+
     first_failure_at: float | None = None
+    """Monotonic timestamp of the first probe that exhibited the current
+    ``signature``. Used to report outage duration on recovery. Reset to ``None``
+    whenever the dependency is healthy or the signature changes.
+    """
+
     last_failure_at: float | None = None
+    """Monotonic timestamp of the most recent failing probe. Updated on every
+    failure so a later recovery can report the last seen time.
+    """
+
     last_error: str = ""
+    """Human-readable detail string from the most recent failing probe. Surfaced
+    in the Recovery Summary so operators see the last error before recovery.
+    """
+
     suppressed_count: int = 0
-    since_heartbeat_count: int = 0
-    last_heartbeat_at: float | None = None
+    """Number of consecutive failing probes suppressed since the First Occurrence
+    for the current ``signature``. Reported in the Recovery Summary and reset to
+    zero on signature change or recovery.
+    """
 
 
 def _error_signature(status: int | None, exc: BaseException | None) -> str | None:
@@ -96,16 +117,15 @@ async def _check_dependency(service: ServiceDependency, timeout: aiohttp.ClientT
         return DependencyResult(name=name, healthy=False, signature=_error_signature(None, e), detail=f"error: {e!s}")
 
 
-def _apply_state(state: _DependencyHealthState, result: DependencyResult, heartbeat_interval_s: float) -> None:
+def _apply_state(state: _DependencyHealthState, result: DependencyResult) -> None:
     """
     Advance the per-dependency state machine and emit the appropriate log.
 
     - healthy -> was unhealthy: emit Recovery Summary (INFO), reset state.
     - failing -> was healthy: emit First Occurrence (ERROR), start an Outage.
-    - failing -> same signature: Suppressed Probe; emit Heartbeat (WARNING) on
-      the interval, otherwise stay silent.
-    - failing -> signature changed: emit a transition (WARNING) then a fresh
-      First Occurrence (ERROR) for the new signature.
+    - failing -> same signature: Suppressed Probe; stay silent.
+    - failing -> signature changed: emit a fresh First Occurrence (ERROR) for
+      the new signature.
     """
     now = _monotonic()
 
@@ -124,18 +144,14 @@ def _apply_state(state: _DependencyHealthState, result: DependencyResult, heartb
         state.last_failure_at = None
         state.last_error = ""
         state.suppressed_count = 0
-        state.since_heartbeat_count = 0
-        state.last_heartbeat_at = None
         return
 
-    if state.signature is None:
+    elif state.signature is None:
         state.signature = result.signature
         state.first_failure_at = now
         state.last_failure_at = now
         state.last_error = result.detail
         state.suppressed_count = 0
-        state.since_heartbeat_count = 0
-        state.last_heartbeat_at = now
         logger.error(
             "health check failed",
             service=result.name,
@@ -143,63 +159,35 @@ def _apply_state(state: _DependencyHealthState, result: DependencyResult, heartb
             detail=result.detail,
         )
         return
+    else:
+        state.last_failure_at = now
+        state.last_error = result.detail
+        state.suppressed_count += 1
 
-    state.last_failure_at = now
-    state.last_error = result.detail
-    state.suppressed_count += 1
-    state.since_heartbeat_count += 1
+        if state.signature == result.signature:
+            return
 
-    if state.signature == result.signature:
-        if state.last_heartbeat_at is not None and now - state.last_heartbeat_at >= heartbeat_interval_s:
-            logger.warning(
-                "health check still failing",
-                service=result.name,
-                signature=state.signature,
-                outage_duration_s=round(now - state.first_failure_at, 3) if state.first_failure_at else None,
-                suppressed_probe_count=state.suppressed_count,
-                probes_since_last_heartbeat=state.since_heartbeat_count,
-                last_error=state.last_error,
-            )
-            state.last_heartbeat_at = now
-            state.since_heartbeat_count = 0
-        return
-
-    logger.warning(
-        "health check failure mode changed",
-        service=result.name,
-        previous_signature=state.signature,
-        new_signature=result.signature,
-        outage_duration_s=round(now - state.first_failure_at, 3) if state.first_failure_at else None,
-        suppressed_probe_count=state.suppressed_count,
-        last_error=state.last_error,
-    )
-    state.signature = result.signature
-    state.first_failure_at = now
-    state.last_failure_at = now
-    state.last_error = result.detail
-    state.suppressed_count = 0
-    state.since_heartbeat_count = 0
-    state.last_heartbeat_at = now
-    logger.error(
-        "health check failed",
-        service=result.name,
-        signature=result.signature,
-        detail=result.detail,
-    )
+        state.signature = result.signature
+        state.first_failure_at = now
+        state.last_failure_at = now
+        state.last_error = result.detail
+        state.suppressed_count = 0
+        logger.error(
+            "health check failed",
+            service=result.name,
+            signature=result.signature,
+            detail=result.detail,
+        )
 
 
 def health_probe_router(
     service_dependencies: list[ServiceDependency],
-    *,
-    heartbeat_interval_s: float = 600.0,
 ) -> APIRouter:
     """
     Build the health-probe router.
 
     Args:
         service_dependencies: Downstream services to check from the readiness probe.
-        heartbeat_interval_s: While a dependency stays unhealthy, emit a "still
-            failing" Heartbeat summary log this often (seconds). Default 10 minutes.
     """
     router = APIRouter(prefix="/health")
 
@@ -236,8 +224,8 @@ def health_probe_router(
         * Rule: Check critical dependencies here.
 
         Failure logs are deduplicated per (dependency, Error Signature): only the
-        First Occurrence is logged in full, retries are Suppressed, and a Heartbeat
-        plus Recovery Summary keep long Outages visible without spamming.
+        First Occurrence is logged in full, retries are Suppressed, and a Recovery
+        Summary is emitted when the dependency comes back.
         """
         timeout = aiohttp.ClientTimeout(total=5.0)
 
@@ -249,7 +237,7 @@ def health_probe_router(
             for result in results:
                 health_checks[result.name] = "healthy" if result.healthy else (result.detail or "unhealthy")
                 state = states.setdefault(result.name, _DependencyHealthState())
-                _apply_state(state, result, heartbeat_interval_s)
+                _apply_state(state, result)
 
         unhealthy = [r for r in results if not r.healthy]
         if unhealthy:
