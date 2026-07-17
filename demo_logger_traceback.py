@@ -33,7 +33,7 @@ logger = get_logger(__name__)
 def my_function_in_user_code(user_id: int, data: dict) -> None:
     """A function in 'user code' that will fail."""
     processed_data = {"id": user_id, "payload": data}
-    result = None
+    result = None  # noqa: F841 -- intentional local, shown in demo traceback
 
     # This will trigger an exception
     another_helper(processed_data)
@@ -41,7 +41,7 @@ def my_function_in_user_code(user_id: int, data: dict) -> None:
 
 def another_helper(info: dict) -> None:
     """Another user code function in the stack."""
-    value = info["missing_key"]  # KeyError here
+    value = info["missing_key"]  # noqa: F841 -- KeyError here, demo
 
 
 def test_library_frames() -> None:
