@@ -1,20 +1,30 @@
 import logging
 import os
-import time
-import uuid
-from collections.abc import Mapping
 from enum import StrEnum
-from typing import Any
 
 import structlog
 import structlog.processors
 from structlog.processors import CallsiteParameter
-from structlog.stdlib import BoundLogger
-from structlog.types import EventDict, Processor
+from structlog.stdlib import BoundLogger, ProcessorFormatter
+from structlog.types import EventDict, Processor, WrappedLogger
 
 from dcc_backend_common.config import get_env_or_throw
 
 from .focused_traceback import FocusedTracebackFormatter
+
+USAGE_LOGGER_NAME = "usage"
+"""Logger name for usage/audit events (log_event, llm_call).
+
+Pinned to INFO in init_logger so usage events are always emitted,
+regardless of LOG_LEVEL. Filter on logger="usage" in OpenSearch.
+"""
+
+# Libraries whose INFO chatter (e.g. httpx "HTTP Request: ...") pollutes prod logs.
+_QUIET_LIBRARIES = ("httpx", "httpcore", "openai", "urllib3", "aiohttp")
+
+# Loggers that uvicorn / fastapi-cli attach their own (Rich) handlers to. Their
+# handlers are removed so records flow through the root handler's single pipeline.
+_UVICORN_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.asgi", "fastapi_cli")
 
 
 class DevTracebackStyle(StrEnum):
@@ -22,76 +32,6 @@ class DevTracebackStyle(StrEnum):
 
     FOCUSED = "focused"  # Rich traceback + focused locals for user code only
     RICH = "rich"  # Default Rich traceback with full locals for all frames
-
-
-class _StructlogPassthroughFormatter(logging.Formatter):
-    """
-    A formatter that passes through pre-formatted structlog output.
-    Does NOT add exception info since structlog handles that.
-    """
-
-    def format(self, record: logging.LogRecord) -> str:
-        # Return just the message - structlog has already formatted everything
-        return record.getMessage()
-
-    def formatException(self, ei: Any) -> str:
-        # Don't format exceptions - structlog's exception_formatter handles this
-        return ""
-
-
-# Standard library logging setup
-def setup_stdlib_logging() -> None:
-    """Configure standard library logging to work with structlog."""
-    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-
-    level = getattr(logging, log_level, logging.INFO)
-
-    # Create a handler for console output with our passthrough formatter
-    handler = logging.StreamHandler()
-    handler.setFormatter(_StructlogPassthroughFormatter())
-
-    # Configure root logger
-    root_logger = logging.getLogger()
-    root_logger.setLevel(level)
-    root_logger.addHandler(handler)
-
-    # Disable propagation for libraries that are too verbose
-    for logger_name in ["uvicorn.access"]:
-        lib_logger = logging.getLogger(logger_name)
-        lib_logger.propagate = False
-
-
-def add_request_id(logger: BoundLogger, method_name: str, event_dict: EventDict) -> Mapping[str, Any]:
-    """
-    Add a request ID to the log context if it doesn't exist.
-
-    Args:
-        logger: The logger instance
-        method_name: The name of the logging method
-        event_dict: The event dictionary
-
-    Returns:
-        The updated event dictionary
-    """
-    if "request_id" not in event_dict:
-        event_dict["request_id"] = str(uuid.uuid4())
-    return event_dict
-
-
-def add_timestamp(logger: BoundLogger, method_name: str, event_dict: EventDict) -> Mapping[str, Any]:
-    """
-    Add an ISO-8601 timestamp to the log entry.
-
-    Args:
-        logger: The logger instance
-        method_name: The name of the logging method
-        event_dict: The event dictionary
-
-    Returns:
-        The updated event dictionary
-    """
-    event_dict["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-    return event_dict
 
 
 def _get_dev_traceback_style() -> DevTracebackStyle:
@@ -142,28 +82,58 @@ def _get_dev_console_renderer() -> structlog.dev.ConsoleRenderer:
         )
 
 
+def _drop_color_message_key(logger: WrappedLogger, method_name: str, event_dict: EventDict) -> EventDict:
+    """Uvicorn duplicates its message with ANSI codes under "color_message" — drop it."""
+    event_dict.pop("color_message", None)
+    return event_dict
+
+
+def _configure_library_loggers() -> None:
+    """Tame third-party loggers so the root handler is the only output path."""
+    for name in _UVICORN_LOGGERS:
+        lib_logger = logging.getLogger(name)
+        lib_logger.handlers.clear()
+        lib_logger.propagate = True
+
+    # Access logs are dropped entirely: the logging middleware reports errors,
+    # and per-request 200 lines only add noise for fluentbit/OpenSearch.
+    access_logger = logging.getLogger("uvicorn.access")
+    access_logger.handlers.clear()
+    access_logger.propagate = False
+
+    for name in _QUIET_LIBRARIES:
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
 def init_logger() -> None:
     """
     Initialize the logger configuration based on environment.
 
+    Sets up a single logging pipeline: structlog events and stdlib records
+    (uvicorn, third-party libraries) are all rendered by the root handler —
+    JSON lines in production, a Rich console renderer in development.
+
     Environment variables:
     - IS_PROD: "true" for production (JSON output), "false" for development
-    - LOG_LEVEL: Logging level (default: "INFO")
+    - LOG_LEVEL: Logging level for application diagnostics (default: "INFO").
+        Usage events (logger "usage") are always emitted at INFO and up.
     - DEV_TRACEBACK_STYLE: Traceback style in dev mode
         - "focused" (default): Rich traceback + locals only for user code
         - "rich": Full Rich traceback with all locals (verbose)
     - LOGGER_USER_CODE_PATHS: Comma-separated paths to consider as user code
     """
-    # Set up standard library logging first
-    setup_stdlib_logging()
+    is_prod = get_env_or_throw("IS_PROD").lower() == "true"
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, log_level, logging.INFO)
 
-    # Define processors list for structlog
-    processors: list[Processor] = [
-        structlog.stdlib.filter_by_level,
+    timestamper = structlog.processors.TimeStamper(fmt="iso", utc=True)
+
+    shared_processors: list[Processor] = [
+        structlog.contextvars.merge_contextvars,
+        structlog.stdlib.add_logger_name,
         structlog.processors.add_log_level,
         structlog.processors.StackInfoRenderer(),
-        add_timestamp,
-        add_request_id,
+        timestamper,
         structlog.processors.CallsiteParameterAdder(
             parameters=[
                 CallsiteParameter.MODULE,
@@ -174,22 +144,65 @@ def init_logger() -> None:
         structlog.processors.UnicodeDecoder(),
     ]
 
-    # Use different renderers for development vs production
-    if get_env_or_throw("IS_PROD").lower() == "true":
-        # JSON renderer for production to be fluentbit compatible
-        processors.append(structlog.processors.JSONRenderer())
-    else:
-        # For development, use configurable console renderer
-        processors.append(_get_dev_console_renderer())
-
-    # Configure structlog
     structlog.configure(
-        processors=processors,
+        processors=[
+            structlog.stdlib.filter_by_level,
+            *shared_processors,
+            ProcessorFormatter.wrap_for_formatter,
+        ],
         context_class=dict,
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
     )
+
+    # Processors applied to records that did NOT originate from structlog
+    # (uvicorn, aiohttp, ...), so they end up with the same shape.
+    foreign_pre_chain: list[Processor] = [
+        structlog.contextvars.merge_contextvars,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.ExtraAdder(),
+        _drop_color_message_key,
+        timestamper,
+    ]
+
+    renderer_processors: list[Processor]
+    if is_prod:
+        # JSON lines for fluentbit/OpenSearch; tracebacks as a string field.
+        renderer_processors = [
+            ProcessorFormatter.remove_processors_meta,
+            structlog.processors.format_exc_info,
+            structlog.processors.JSONRenderer(),
+        ]
+    else:
+        renderer_processors = [
+            ProcessorFormatter.remove_processors_meta,
+            _get_dev_console_renderer(),
+        ]
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        ProcessorFormatter(
+            processors=renderer_processors,
+            foreign_pre_chain=foreign_pre_chain,
+        )
+    )
+
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()
+    root_logger.addHandler(handler)
+    root_logger.setLevel(level)
+
+    # Route Python warnings (DeprecationWarning, ...) through the pipeline
+    # instead of raw stderr, so they are JSON in production too.
+    logging.captureWarnings(True)
+
+    _configure_library_loggers()
+
+    # Usage events must survive any LOG_LEVEL (level is checked on the emitting
+    # logger, not on root, so this wins even when root is set to WARNING).
+    logging.getLogger(USAGE_LOGGER_NAME).setLevel(logging.INFO)
 
 
 def get_logger(name: str | None = None) -> BoundLogger:
@@ -205,3 +218,13 @@ def get_logger(name: str | None = None) -> BoundLogger:
     if name:
         return structlog.get_logger(name)
     return structlog.get_logger()
+
+
+def get_usage_logger() -> BoundLogger:
+    """
+    Get the logger for usage/audit events.
+
+    Events logged here are always emitted (INFO and up), regardless of the
+    LOG_LEVEL used for application diagnostics.
+    """
+    return structlog.get_logger(USAGE_LOGGER_NAME)

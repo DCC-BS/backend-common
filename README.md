@@ -255,10 +255,39 @@ from dcc_backend_common.logger import init_logger, get_logger
 init_logger()  # JSON in production (IS_PROD=true), colored console otherwise
 logger = get_logger(__name__)
 
-logger.info("request_received", extra={"user_id": 42})
+logger.info("request_received", user_id=42)  # flat, snake_case keys
 ```
 
-A `request_id` and timestamp are added automatically to every log entry.
+`init_logger()` sets up a single pipeline: structlog events *and* stdlib
+records (uvicorn, third-party libraries, Python warnings) are all rendered by
+the root handler. In production everything is one JSON line per event; in
+development a Rich console renderer is used. Chatty libraries (`httpx`,
+`httpcore`, ...) are capped at WARNING, uvicorn access logs are disabled.
+
+`LOG_LEVEL` controls application diagnostics (recommended: `debug` on test
+stages, `info` in prod). Usage events are exempt — see below.
+
+**Usage events** (`UsageTrackingService.log_event`, `llm_call` from
+`BaseAgent`) go through the pinned `usage` logger and are always emitted,
+regardless of `LOG_LEVEL`. Filter on `logger: "usage"` in OpenSearch.
+
+**Request correlation**: add the logging middleware so every log line within
+a request carries the same `request_id` (from the `X-Request-ID` header, or
+generated). It also logs 4xx/5xx responses and unhandled exceptions, and
+skips `/health/*`:
+
+```python
+from dcc_backend_common.fastapi_logging_middleware import add_logging_middleware
+
+add_logging_middleware(app)
+```
+
+**Serving**: run with plain `uvicorn` (not `fastapi run`, whose Rich banner
+and handlers bypass the JSON pipeline):
+
+```bash
+uvicorn my_app.app:app --host 0.0.0.0 --port 8090 --no-access-log
+```
 
 ---
 

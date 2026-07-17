@@ -25,11 +25,12 @@ from pydantic_ai.retries import AsyncTenacityTransport, RetryConfig, wait_retry_
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from dcc_backend_common.config.app_config import LlmConfig
-from dcc_backend_common.logger import get_logger
+from dcc_backend_common.logger import get_logger, get_usage_logger
 
 from .postprocessing import PostprocessingContext, replace_eszett, trim_text
 
 logger = get_logger(__name__)
+usage_logger = get_usage_logger()
 
 type UserPrompt = str | Sequence[UserContent] | None
 type Preprocessor = Callable[[Any, PostprocessingContext], Any]
@@ -143,19 +144,15 @@ class BaseAgent[DepsType, OutputType](ABC):
     def _log_result[TOutput](self, result: AgentRunResult[TOutput] | StreamedRunResult[DepsType, TOutput]):
         usage = result.usage
 
-        logger.info(
+        usage_logger.info(
             "llm_call",
-            extra={
-                "usage": {
-                    "input_tokens": usage.input_tokens,
-                    "output_tokens": usage.output_tokens,
-                    "total_tokens": usage.total_tokens,
-                    "tool_calls": usage.tool_calls,
-                    "requests": usage.requests,
-                    "details": usage.details,
-                },
-                "finish_reason": result.response.finish_reason,
-            },
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            total_tokens=usage.total_tokens,
+            tool_calls=usage.tool_calls,
+            requests=usage.requests,
+            usage_details=usage.details,
+            finish_reason=result.response.finish_reason,
         )
 
     @abstractmethod
