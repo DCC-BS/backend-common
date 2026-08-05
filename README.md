@@ -252,34 +252,61 @@ app.include_router(health_probe_router(service_dependencies))
 ```python
 from dcc_backend_common.logger import init_logger, get_logger
 
-init_logger()  # JSON in production (IS_PROD=true), colored console otherwise
+init_logger(app_name="my-app")  # JSON in production (IS_PROD=true), colored console otherwise
 logger = get_logger(__name__)
 
-logger.info("request_received", user_id=42)  # flat, snake_case keys
+logger.info("Processing document", page_count=42)  # flat, snake_case keys
 ```
 
 `init_logger()` sets up a single pipeline: structlog events *and* stdlib
 records (uvicorn, third-party libraries, Python warnings) are all rendered by
 the root handler. In production everything is one JSON line per event; in
 development a Rich console renderer is used. Chatty libraries (`httpx`,
-`httpcore`, ...) are capped at WARNING, uvicorn access logs are disabled.
+`httpcore`, ...) are capped at WARNING (override per app via
+`library_log_levels={"httpx": "DEBUG"}`), uvicorn access logs are disabled.
+`app_name` is stamped as `app` on every production line so the JSON is
+self-describing outside the k8s pod-label context.
+
+**`event` vs `message`**: in production, `event` is a closed vocabulary of
+event types (`EVENT_TYPES`: `app_event`, `llm_call`, `request_finished`,
+`request_failed`, `health check failed`, `health check recovered`) that
+dashboards and monitors term-match on. Any other event string — i.e. a
+human-readable message like the one above — is moved to the `message` field
+at render time. Extend the vocabulary per app with
+`init_logger(extra_event_types={...})`.
 
 `LOG_LEVEL` controls application diagnostics (recommended: `debug` on test
 stages, `info` in prod). Usage events are exempt — see below.
 
-**Usage events** (`UsageTrackingService.log_event`, `llm_call` from
-`BaseAgent`) go through the pinned `usage` logger and are always emitted,
+**Usage events** go through the pinned `usage` logger and are always emitted,
 regardless of `LOG_LEVEL`. Filter on `logger: "usage"` in OpenSearch.
 
-**Request correlation**: add the logging middleware so every log line within
-a request carries the same `request_id` (from the `X-Request-ID` header, or
-generated). It also logs 4xx/5xx responses and unhandled exceptions, and
-skips `/health/*`:
+```python
+usage_tracking_service.log_event("translation.text", user_id, text_length=42)
+```
+
+`action` follows `<feature>.<operation>` in snake_case (`ACTION_PATTERN`) —
+hand-chosen names, never `__name__` or module paths, so dashboard buckets
+survive refactorings and stay comparable across apps. `log_event` also binds
+the `pseudonym_id` into the request context, so subsequent `llm_call` and
+`request_finished` lines of the same request carry it. `llm_call` lines come
+from `BaseAgent` automatically; apps with a hand-built pydantic-ai agent can
+call `log_llm_call(result)` themselves.
+
+**Request correlation and completion events**: the logging middleware binds a
+per-request `request_id` (from the `X-Request-ID` header, or generated) into
+the log context and emits one `request_finished` (or `request_failed`, with
+traceback) per request, carrying `method`, `path` (route template, never the
+concrete URL), `status_code`, and `duration_s`. Health probes and CORS
+preflights are not logged as `request_finished`; excluded paths still log
+`request_failed` when they raise. Exclude additional high-frequency endpoints
+by route template:
 
 ```python
 from dcc_backend_common.fastapi_logging_middleware import add_logging_middleware
 
-add_logging_middleware(app)
+add_logging_middleware(app)  # excludes /health by default
+add_logging_middleware(app, excluded_paths={"/health", "/task/{task_id}/status"})
 ```
 
 **Serving**: run with plain `uvicorn` (not `fastapi run`, whose Rich banner
