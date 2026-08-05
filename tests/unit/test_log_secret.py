@@ -80,15 +80,35 @@ class TestSplitEventMessage:
 
 
 class TestDropAsgiExceptionRecords:
-    def test_asgi_exception_record_dropped_other_records_pass(self):
+    @staticmethod
+    def _record(msg: str):
         import logging
 
-        from dcc_backend_common.logger.logger import _DropAsgiExceptionRecords
+        return logging.LogRecord("uvicorn.error", logging.ERROR, __file__, 1, msg, None, None)
+
+    def test_dropped_only_when_middleware_logged_the_failure(self):
+        from dcc_backend_common.logger.logger import _DropAsgiExceptionRecords, asgi_exception_logged
 
         f = _DropAsgiExceptionRecords()
 
-        def record(msg: str) -> logging.LogRecord:
-            return logging.LogRecord("uvicorn.error", logging.ERROR, __file__, 1, msg, None, None)
+        token = asgi_exception_logged.set(True)
+        try:
+            assert f.filter(self._record("Exception in ASGI application\n")) is False
+        finally:
+            asgi_exception_logged.reset(token)
 
-        assert f.filter(record("Exception in ASGI application\n")) is False
-        assert f.filter(record("Application startup complete.")) is True
+    def test_kept_when_middleware_absent_or_did_not_log(self):
+        from dcc_backend_common.logger.logger import _DropAsgiExceptionRecords, asgi_exception_logged
+
+        f = _DropAsgiExceptionRecords()
+
+        token = asgi_exception_logged.set(False)
+        try:
+            assert f.filter(self._record("Exception in ASGI application\n")) is True
+        finally:
+            asgi_exception_logged.reset(token)
+
+    def test_other_records_always_pass(self):
+        from dcc_backend_common.logger.logger import _DropAsgiExceptionRecords
+
+        assert _DropAsgiExceptionRecords().filter(self._record("Application startup complete.")) is True

@@ -173,3 +173,13 @@ class TestTemplateExclusion:
         finished = only(fake_logger.calls, "request_finished")
         assert len(finished) == 1
         assert finished[0][2]["path"] == "/task/{task_id}/result"
+
+
+class TestAsgiExceptionHandshake:
+    def test_flag_set_after_request_failed(self, client):
+        from dcc_backend_common.logger.logger import asgi_exception_logged
+
+        assert asgi_exception_logged.get() is False
+        client.get("/boom")
+        client.get("/items/1")
+        assert asgi_exception_logged.get() is False

@@ -1,3 +1,4 @@
+import contextvars
 import enum
 import logging
 import os
@@ -160,18 +161,27 @@ def _make_add_app_field(app_name: str) -> Processor:
     return add_app_field
 
 
+asgi_exception_logged: contextvars.ContextVar[bool] = contextvars.ContextVar("asgi_exception_logged", default=False)
+"""Set by LoggingMiddleware after it logs a request_failed for the current
+request. Uvicorn logs its own "Exception in ASGI application" record in the
+same task context, so _DropAsgiExceptionRecords can tell whether that record
+is a duplicate of an already-logged failure or the only trace of one."""
+
+
 class _DropAsgiExceptionRecords(logging.Filter):
     """
-    Drop uvicorn's "Exception in ASGI application" records.
-
-    The logging middleware is the outermost middleware and already logs every
-    unhandled exception as `request_failed` with request_id, path, and the
-    traceback — uvicorn's own line is a second copy of the same traceback with
-    no request context.
+    Drop uvicorn's "Exception in ASGI application" records, but only when the
+    logging middleware already logged the same failure as `request_failed`
+    (with request_id, path, and the traceback) — then uvicorn's line is a
+    second copy of the same traceback with no request context. Without the
+    middleware, the uvicorn record is the only trace of the exception and is
+    kept.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        return not record.getMessage().startswith("Exception in ASGI application")
+        if not record.getMessage().startswith("Exception in ASGI application"):
+            return True
+        return not asgi_exception_logged.get()
 
 
 def _configure_library_loggers(library_log_levels: dict[str, int | str] | None = None) -> None:

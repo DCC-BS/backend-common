@@ -10,6 +10,7 @@ from starlette.responses import Response
 from starlette.routing import Route
 
 from dcc_backend_common.logger import get_logger
+from dcc_backend_common.logger.logger import asgi_exception_logged
 
 logger = get_logger("request")
 
@@ -88,6 +89,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
         method = request.method
         start_time = time.perf_counter()
+        asgi_exception_logged.set(False)
 
         try:
             response = await call_next(request)
@@ -100,6 +102,9 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 duration_s=round(time.perf_counter() - start_time, 4),
                 exc_info=True,
             )
+            # Tells the uvicorn.error filter that this failure is recorded, so
+            # uvicorn's duplicate "Exception in ASGI application" line is dropped.
+            asgi_exception_logged.set(True)
             raise
 
         path_template = _route_template(request)

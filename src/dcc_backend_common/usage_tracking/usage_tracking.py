@@ -140,6 +140,9 @@ class UsageTrackingService:
             logger.warning("action does not match <feature>.<operation> naming convention", action=action)
 
         pseudonym_id = self.get_pseudonymized_user_id(user_id)
+        # The computed pseudonym always wins; a caller-supplied one would
+        # otherwise raise TypeError (duplicate keyword) and break the request.
+        kwargs.pop("pseudonym_id", None)
         structlog.contextvars.bind_contextvars(pseudonym_id=pseudonym_id)
 
         self._logger.info("app_event", action=action, pseudonym_id=pseudonym_id, **kwargs)

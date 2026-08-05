@@ -75,3 +75,9 @@ class TestLogLlmCall:
         kwargs = mock_get.return_value.info.call_args[1]
         assert kwargs["tool_calls"] == 1
         assert kwargs["finish_reason"] == "tool_call"
+
+
+class TestPseudonymCollision:
+    def test_caller_supplied_pseudonym_id_is_replaced_not_crashing(self, service):
+        service.log_event("translation.text", "user-1", pseudonym_id="spoofed")
+        assert event_kwargs(service)["pseudonym_id"] == service.get_pseudonymized_user_id("user-1")
