@@ -11,10 +11,18 @@ from fastapi import APIRouter, Response
 
 from dcc_backend_common.logger import get_logger
 
-logger = get_logger(__name__)
+# "health" (not __name__), matching the "usage" / "request" logger convention.
+logger = get_logger("health")
 
 # Indirection so tests can advance the clock deterministically.
 _monotonic = time.monotonic
+
+# During an ongoing outage the dedup logic suppresses repeated failures, but the
+# "KIW dependency down" monitor counts `health check failed` events in a sliding
+# window — a single line at outage start would let the alert auto-resolve while
+# the dependency is still down. Re-emit at this interval so the monitor keeps
+# firing without logging every few-second probe.
+HEARTBEAT_INTERVAL_S = 300.0
 
 
 class ServiceDependency(TypedDict):
@@ -31,6 +39,12 @@ class DependencyResult:
     healthy: bool
     signature: str | None
     detail: str
+    url: str = ""
+    reason: str | None = None
+    """Closed vocabulary consumed by dashboards: timeout, connection_error, bad_status, unexpected."""
+    status_code: int | None = None
+    """Integer HTTP status of the dependency's response, or None when no response arrived."""
+    duration_s: float | None = None
 
 
 @dataclass(slots=True)
@@ -66,6 +80,12 @@ class _DependencyHealthState:
     zero on signature change or recovery.
     """
 
+    last_emitted_at: float | None = None
+    """Monotonic timestamp of the last emitted ``health check failed`` line
+    (First Occurrence or Heartbeat). Drives heartbeat re-emission so the
+    alerting monitor keeps seeing events during a long outage.
+    """
+
 
 def _error_signature(status: int | None, exc: BaseException | None) -> str | None:
     """
@@ -92,15 +112,20 @@ async def _check_dependency(service: ServiceDependency, timeout: aiohttp.ClientT
     Occurrence, a Suppressed Probe, or a Heartbeat.
     """
     name = service["name"]
+    url = service["health_check_url"]
     headers = {"Authorization": f"Bearer {service['api_key']}"} if service["api_key"] else {}
+    start = time.perf_counter()
     try:
         async with (
             aiohttp.ClientSession(timeout=timeout, headers=headers) as session,
-            session.get(service["health_check_url"]) as svc_response,
+            session.get(url) as svc_response,
         ):
+            duration_s = round(time.perf_counter() - start, 3)
             status = svc_response.status
             if status == 200:
-                return DependencyResult(name=name, healthy=True, signature=None, detail="healthy")
+                return DependencyResult(
+                    name=name, healthy=True, signature=None, detail="healthy", url=url, duration_s=duration_s
+                )
             body = ""
             try:
                 body = (await svc_response.text()).strip()
@@ -112,9 +137,67 @@ async def _check_dependency(service: ServiceDependency, timeout: aiohttp.ClientT
                 healthy=False,
                 signature=_error_signature(status, None),
                 detail=detail,
+                url=url,
+                reason="bad_status",
+                status_code=status,
+                duration_s=duration_s,
             )
+    # aiohttp's total timeout raises the builtin TimeoutError (asyncio.TimeoutError),
+    # which is NOT an aiohttp.ClientError — without this clause it would escape the
+    # probe and surface only as an anonymous "Exception in ASGI application".
+    except TimeoutError as e:
+        return DependencyResult(
+            name=name,
+            healthy=False,
+            signature=_error_signature(None, e),
+            detail=f"timeout after {timeout.total}s",
+            url=url,
+            reason="timeout",
+            duration_s=round(time.perf_counter() - start, 3),
+        )
     except aiohttp.ClientError as e:
-        return DependencyResult(name=name, healthy=False, signature=_error_signature(None, e), detail=f"error: {e!s}")
+        return DependencyResult(
+            name=name,
+            healthy=False,
+            signature=_error_signature(None, e),
+            detail=f"error: {e!s}",
+            url=url,
+            reason="connection_error",
+            duration_s=round(time.perf_counter() - start, 3),
+        )
+    except Exception as e:
+        return DependencyResult(
+            name=name,
+            healthy=False,
+            signature=_error_signature(None, e),
+            detail=f"unexpected error: {e!s}",
+            url=url,
+            reason="unexpected",
+            duration_s=round(time.perf_counter() - start, 3),
+        )
+
+
+def _log_failure(state: _DependencyHealthState, result: DependencyResult, now: float, **extra: object) -> None:
+    """
+    Emit the ``health check failed`` line.
+
+    The event string is an exact-match contract with the "KIW dependency down"
+    monitor and the *Health check failures by dependency* panel: lowercase,
+    single spaces, no trailing whitespace. ``service`` must stay a
+    low-cardinality stable name (never a URL or per-request value).
+    """
+    state.last_emitted_at = now
+    logger.error(
+        "health check failed",
+        service=result.name,
+        url=result.url,
+        reason=result.reason,
+        status_code=result.status_code,
+        duration_s=result.duration_s,
+        signature=result.signature,
+        detail=result.detail,
+        **extra,
+    )
 
 
 def _apply_state(state: _DependencyHealthState, result: DependencyResult) -> None:
@@ -123,7 +206,9 @@ def _apply_state(state: _DependencyHealthState, result: DependencyResult) -> Non
 
     - healthy -> was unhealthy: emit Recovery Summary (INFO), reset state.
     - failing -> was healthy: emit First Occurrence (ERROR), start an Outage.
-    - failing -> same signature: Suppressed Probe; stay silent.
+    - failing -> same signature: Suppressed Probe; stay silent, except a
+      Heartbeat re-emission every HEARTBEAT_INTERVAL_S so the alerting monitor
+      keeps seeing events during a long outage.
     - failing -> signature changed: emit a fresh First Occurrence (ERROR) for
       the new signature.
     """
@@ -135,7 +220,9 @@ def _apply_state(state: _DependencyHealthState, result: DependencyResult) -> Non
                 "health check recovered",
                 service=result.name,
                 previous_signature=state.signature,
-                outage_duration_s=round(now - state.first_failure_at, 3) if state.first_failure_at else None,
+                outage_duration_s=round(now - state.first_failure_at, 3)
+                if state.first_failure_at is not None
+                else None,
                 suppressed_probe_count=state.suppressed_count,
                 last_error=state.last_error,
             )
@@ -144,6 +231,7 @@ def _apply_state(state: _DependencyHealthState, result: DependencyResult) -> Non
         state.last_failure_at = None
         state.last_error = ""
         state.suppressed_count = 0
+        state.last_emitted_at = None
         return
 
     elif state.signature is None:
@@ -152,12 +240,7 @@ def _apply_state(state: _DependencyHealthState, result: DependencyResult) -> Non
         state.last_failure_at = now
         state.last_error = result.detail
         state.suppressed_count = 0
-        logger.error(
-            "health check failed",
-            service=result.name,
-            signature=result.signature,
-            detail=result.detail,
-        )
+        _log_failure(state, result, now)
         return
     else:
         state.last_failure_at = now
@@ -165,6 +248,16 @@ def _apply_state(state: _DependencyHealthState, result: DependencyResult) -> Non
         state.suppressed_count += 1
 
         if state.signature == result.signature:
+            if state.last_emitted_at is not None and now - state.last_emitted_at >= HEARTBEAT_INTERVAL_S:
+                _log_failure(
+                    state,
+                    result,
+                    now,
+                    outage_duration_s=round(now - state.first_failure_at, 3)
+                    if state.first_failure_at is not None
+                    else None,
+                    suppressed_probe_count=state.suppressed_count,
+                )
             return
 
         state.signature = result.signature
@@ -172,12 +265,7 @@ def _apply_state(state: _DependencyHealthState, result: DependencyResult) -> Non
         state.last_failure_at = now
         state.last_error = result.detail
         state.suppressed_count = 0
-        logger.error(
-            "health check failed",
-            service=result.name,
-            signature=result.signature,
-            detail=result.detail,
-        )
+        _log_failure(state, result, now)
 
 
 def health_probe_router(

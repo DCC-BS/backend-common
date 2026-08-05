@@ -225,3 +225,109 @@ def test_liveness_and_startup_probes(harness):
     assert startup.status_code == 200
     assert startup.json()["status"] == "started"
     assert harness.logger.calls == []
+
+
+class TestCheckDependencyErrorHandling:
+    """_check_dependency must catch its own failures — a TimeoutError escaping the
+    probe surfaces only as an anonymous 'Exception in ASGI application'."""
+
+    def _fake_session_factory(self, exc: BaseException):
+        class FakeGetCtx:
+            async def __aenter__(self):
+                raise exc
+
+            async def __aexit__(self, *a):
+                return False
+
+        class FakeSession:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            def get(self, url):
+                return FakeGetCtx()
+
+        return FakeSession
+
+    @pytest.mark.parametrize(
+        ("exc", "expected_reason", "expected_signature"),
+        [
+            (TimeoutError(), "timeout", "TimeoutError"),
+            (__import__("aiohttp").ClientConnectionError("refused"), "connection_error", "ClientConnectionError"),
+            (RuntimeError("boom"), "unexpected", "RuntimeError"),
+        ],
+    )
+    async def test_exceptions_are_caught_and_classified(self, monkeypatch, exc, expected_reason, expected_signature):
+        import aiohttp
+
+        monkeypatch.setattr(router_module.aiohttp, "ClientSession", self._fake_session_factory(exc))
+        result = await router_module._check_dependency(
+            {"name": "svc-a", "health_check_url": "http://svc-a/health", "api_key": None},
+            aiohttp.ClientTimeout(total=5.0),
+        )
+        assert result.healthy is False
+        assert result.reason == expected_reason
+        assert result.signature == expected_signature
+        assert result.status_code is None
+        assert result.url == "http://svc-a/health"
+        assert result.duration_s is not None
+
+
+class TestFailureLogFields:
+    def test_first_occurrence_carries_contract_fields(self, harness):
+        client = harness.build_app({
+            "svc-a": [
+                DependencyResult(
+                    name="svc-a",
+                    healthy=False,
+                    signature="TimeoutError",
+                    detail="timeout after 5.0s",
+                    url="http://svc-a/health",
+                    reason="timeout",
+                    status_code=None,
+                    duration_s=5.001,
+                )
+            ],
+            "svc-b": [ok("svc-b")],
+        })
+        response = client.get("/health/readiness")
+        assert response.status_code == 503
+
+        level, event, kwargs = harness.logger.calls[0]
+        assert level == "error"
+        assert event == "health check failed"  # exact-match contract with the alerting monitor
+        assert kwargs["service"] == "svc-a"
+        assert kwargs["reason"] == "timeout"
+        assert kwargs["url"] == "http://svc-a/health"
+        assert kwargs["status_code"] is None
+        assert kwargs["duration_s"] == 5.001
+
+
+class TestHeartbeat:
+    def test_long_outage_reemits_heartbeat(self, harness):
+        client = harness.build_app({"svc-a": [fail("svc-a", "http:503")], "svc-b": [ok("svc-b")]})
+
+        client.get("/health/readiness")  # first occurrence
+        assert len(harness.logger.calls) == 1
+
+        harness.clock.advance(10.0)
+        client.get("/health/readiness")  # suppressed
+        assert len(harness.logger.calls) == 1
+
+        harness.clock.advance(router_module.HEARTBEAT_INTERVAL_S)
+        client.get("/health/readiness")  # heartbeat
+        assert len(harness.logger.calls) == 2
+        level, event, kwargs = harness.logger.calls[1]
+        assert level == "error"
+        assert event == "health check failed"
+        assert kwargs["suppressed_probe_count"] == 2
+        assert kwargs["outage_duration_s"] is not None
+
+        harness.clock.advance(10.0)
+        client.get("/health/readiness")  # suppressed again after heartbeat
+        assert len(harness.logger.calls) == 2

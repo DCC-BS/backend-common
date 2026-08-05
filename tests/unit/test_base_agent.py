@@ -502,3 +502,90 @@ class TestStreamList:
         self._mock_run_stream(agent, [])
         items = [x async for x in agent.stream_list("prompt")]
         assert items == []
+
+
+class TestLogResult:
+    """llm_call log contract: closed finish_reason vocabulary, consistent tool_calls."""
+
+    def _make_result(self, finish_reason: str | None, parts: list[Any]) -> MagicMock:
+        result = MagicMock()
+        result.usage = MagicMock(
+            input_tokens=10, output_tokens=5, total_tokens=15, tool_calls=0, requests=1, details={"d": 1}
+        )
+        result.response = MagicMock(finish_reason=finish_reason, parts=parts)
+        return result
+
+    def _log_call(self, agent, result) -> dict:
+        with patch("dcc_backend_common.usage_tracking.usage_tracking.get_usage_logger") as mock_get_usage_logger:
+            mock_usage_logger = mock_get_usage_logger.return_value
+            agent._log_result(result)
+        return mock_usage_logger.info.call_args[1]
+
+    def test_tool_call_finish_reason_implies_tool_calls_gt_zero(self, agent):
+        # A structured-output tool produces finish_reason "tool_call" while
+        # RunUsage.tool_calls (executed function tools) stays 0. The logged
+        # tool_calls must count the ToolCallParts present in the response.
+        from pydantic_ai.messages import ToolCallPart
+
+        result = self._make_result("tool_call", [ToolCallPart(tool_name="final_result", args="{}")])
+        kwargs = self._log_call(agent, result)
+        assert kwargs["finish_reason"] == "tool_call"
+        assert kwargs["tool_calls"] > 0
+
+    def test_no_tool_parts_logs_zero_tool_calls(self, agent):
+        result = self._make_result("stop", [TextPart(content="hi")])
+        kwargs = self._log_call(agent, result)
+        assert kwargs["finish_reason"] == "stop"
+        assert kwargs["tool_calls"] == 0
+
+    def test_unknown_finish_reason_maps_to_unexpected(self, agent):
+        result = self._make_result("weird_provider_value", [])
+        kwargs = self._log_call(agent, result)
+        assert kwargs["finish_reason"] == "unexpected"
+
+    def test_none_finish_reason_passes_through(self, agent):
+        result = self._make_result(None, [])
+        kwargs = self._log_call(agent, result)
+        assert kwargs["finish_reason"] is None
+
+    def test_token_fields_are_flat(self, agent):
+        result = self._make_result("stop", [])
+        kwargs = self._log_call(agent, result)
+        assert kwargs["input_tokens"] == 10
+        assert kwargs["output_tokens"] == 5
+        assert kwargs["total_tokens"] == 15
+        assert kwargs["usage_details"] == {"d": 1}
+
+
+class TestStreamingUsageLogging:
+    async def test_run_stream_events_logs_llm_call_once(self, agent):
+        events = [make_text_start("hi"), make_run_result_event("hi")]
+
+        @asynccontextmanager
+        async def fake_ctx(**kw):
+            yield fake_stream_events(*events)
+
+        agent._agent.run_stream_events = fake_ctx
+
+        with patch("dcc_backend_common.usage_tracking.usage_tracking.get_usage_logger") as mock_get_usage_logger:
+            mock_usage_logger = mock_get_usage_logger.return_value
+            [e async for e in agent.run_stream_events("prompt")]
+
+        assert mock_usage_logger.info.call_count == 1
+        assert mock_usage_logger.info.call_args[0][0] == "llm_call"
+
+    async def test_run_stream_text_logs_llm_call(self, agent):
+        events = [make_text_start("he"), make_text_delta("llo"), make_run_result_event("hello")]
+
+        @asynccontextmanager
+        async def fake_ctx(**kw):
+            yield fake_stream_events(*events)
+
+        agent._agent.run_stream_events = fake_ctx
+
+        with patch("dcc_backend_common.usage_tracking.usage_tracking.get_usage_logger") as mock_get_usage_logger:
+            mock_usage_logger = mock_get_usage_logger.return_value
+            chunks = [c async for c in agent.run_stream_text("prompt")]
+
+        assert "".join(chunks) == "hello"
+        assert mock_usage_logger.info.call_count == 1

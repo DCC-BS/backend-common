@@ -26,6 +26,7 @@ from tenacity import retry_if_exception_type, stop_after_attempt, wait_exponenti
 
 from dcc_backend_common.config.app_config import LlmConfig
 from dcc_backend_common.logger import get_logger, get_usage_logger
+from dcc_backend_common.usage_tracking import log_llm_call
 
 from .postprocessing import PostprocessingContext, replace_eszett, trim_text
 
@@ -142,18 +143,7 @@ class BaseAgent[DepsType, OutputType](ABC):
         return output
 
     def _log_result[TOutput](self, result: AgentRunResult[TOutput] | StreamedRunResult[DepsType, TOutput]):
-        usage = result.usage
-
-        usage_logger.info(
-            "llm_call",
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            total_tokens=usage.total_tokens,
-            tool_calls=usage.tool_calls,
-            requests=usage.requests,
-            usage_details=usage.details,
-            finish_reason=result.response.finish_reason,
-        )
+        log_llm_call(result)
 
     @abstractmethod
     def create_agent(self, model: Model) -> Agent[DepsType, OutputType]: ...
@@ -247,11 +237,17 @@ class BaseAgent[DepsType, OutputType](ABC):
         deps: DepsType | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[AgentStreamEvent | AgentRunResultEvent[OutputType]]:
-        """Stream raw pydantic-ai events. No postprocessing; use run() for a postprocessed final result."""
+        """Stream raw pydantic-ai events. No postprocessing; use run() for a postprocessed final result.
+
+        Emits the llm_call usage log when the final AgentRunResultEvent arrives, so
+        streaming callers (run_stream_text and direct users) are tracked like run().
+        """
         ms = self._extract_model_settings(kwargs)
 
         async with self._agent.run_stream_events(  # ty: ignore[no-matching-overload]
             user_prompt=self.process_prompt(user_prompt, deps), deps=deps, model_settings=ms, **kwargs
         ) as stream:
             async for event in stream:
+                if isinstance(event, AgentRunResultEvent):
+                    self._log_result(event.result)
                 yield event
