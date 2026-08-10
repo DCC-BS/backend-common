@@ -1,0 +1,78 @@
+[tools]
+python = "3.13"
+usage = "3.5.6"
+uv = "0.11.31"
+
+# ── Setup ───────────────────────────────────────────────────────────────────
+
+[tasks.install]
+description = "Create the virtual environment (all extras) and install the pre-commit hooks"
+alias = "i"
+sources = ["pyproject.toml", "uv.lock"]
+outputs = [".venv", ".git/hooks/pre-commit"]
+run = [
+    "uv sync --all-extras",
+    "uv run pre-commit install",
+]
+
+# ── Quality ─────────────────────────────────────────────────────────────────
+
+[tasks.check]
+description = "Verify lockfile, run pre-commit, and type-check"
+alias = "c"
+run = [
+    "uv lock --locked",
+    "uv run pre-commit run -a",
+    "uv run ty check",
+]
+
+[tasks.ci-check]
+description = "Verify lockfile and type-check without modifying files"
+run = [
+    "uv lock --locked",
+    "uv run ty check",
+]
+
+# ── Testing ─────────────────────────────────────────────────────────────────
+
+[tasks.test]
+description = "Run the unit test suite (including doctests)"
+alias = "t"
+run = "uv run python -m pytest tests/unit --doctest-modules"
+
+[tasks.integration]
+description = "Run integration tests (requires .env)"
+run = "uv run --env-file .env python -m pytest tests/integration --doctest-modules --logfire"
+
+[tasks.ci]
+description = "Run all CI checks (lock, types, tests)"
+depends = ["ci-check", "test"]
+
+# ── Integration LLM (vLLM) ──────────────────────────────────────────────────
+# Compose resolves its default .env relative to the compose file's directory, so
+# the repo-root .env must be passed explicitly to keep the container and the
+# integration tests reading the same LLM_PORT / LLM_MODEL values.
+
+[tasks."llm:up"]
+description = "Start the vLLM docker container for integration tests (requires .env)"
+dir = "{{config_root}}"
+run = "docker compose --env-file .env -f tests/integration/docker-compose.yml up -d"
+
+[tasks."llm:logs"]
+description = "Follow the vLLM container logs"
+run = "docker compose --env-file .env -f tests/integration/docker-compose.yml logs -f"
+
+[tasks."llm:down"]
+description = "Stop the vLLM docker container"
+run = "docker compose --env-file .env -f tests/integration/docker-compose.yml down"
+
+# ── Build ───────────────────────────────────────────────────────────────────
+
+[tasks.build]
+description = "Build the wheel file"
+depends = ["cleanup:build"]
+run = "uvx --from build pyproject-build --installer uv"
+
+[tasks."cleanup:build"]
+description = "Remove build artifacts"
+run = "uv run python -c \"import shutil, os; shutil.rmtree('dist') if os.path.exists('dist') else None\""
