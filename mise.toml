@@ -35,7 +35,7 @@ run = [
 
 # ── Testing ─────────────────────────────────────────────────────────────────
 
-[tasks.test]
+[tasks."test:unit"]
 description = "Run the unit test suite (including doctests)"
 alias = "t"
 run = "uv run python -m pytest tests/unit --doctest-modules"
@@ -46,7 +46,7 @@ run = "uv run --env-file .env python -m pytest tests/integration --doctest-modul
 
 [tasks.ci]
 description = "Run all CI checks (lock, types, tests)"
-depends = ["ci-check", "test"]
+depends = ["ci-check", "test:unit"]
 
 # ── Integration LLM (vLLM) ──────────────────────────────────────────────────
 # Compose resolves its default .env relative to the compose file's directory, so
