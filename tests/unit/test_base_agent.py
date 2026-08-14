@@ -10,7 +10,7 @@ import pytest
 from pydantic_ai import AgentRunResultEvent, PartDeltaEvent, PartStartEvent
 from pydantic_ai.messages import TextPart, TextPartDelta, ThinkingPart, ThinkingPartDelta
 from pydantic_ai.retries import AsyncTenacityTransport
-from tenacity import stop_after_attempt
+from tenacity import retry_base, stop_after_attempt
 
 from dcc_backend_common.llm_agent.base_agent import BaseAgent
 from dcc_backend_common.llm_agent.postprocessing import replace_eszett, trim_text
@@ -168,6 +168,7 @@ class TestInit:
         transport = agent._build_http_client()._transport
         assert isinstance(transport, AsyncTenacityTransport)
         should_retry = transport.config["retry"]
+        assert isinstance(should_retry, retry_base)
 
         def outcome_for(error: Exception) -> bool:
             state = MagicMock()
