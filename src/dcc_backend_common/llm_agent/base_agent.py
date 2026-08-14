@@ -5,6 +5,7 @@ from collections.abc import AsyncGenerator, Callable, Sequence
 from typing import Any, TypedDict, cast
 
 import httpx
+from openai import AsyncOpenAI
 from pydantic_ai import (
     Agent,
     AgentRunResult,
@@ -22,7 +23,12 @@ from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.result import StreamedRunResult
 from pydantic_ai.retries import AsyncTenacityTransport, RetryConfig, wait_retry_after
-from tenacity import retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry_if_exception_type,
+    retry_if_not_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from dcc_backend_common.config.app_config import LlmConfig
 from dcc_backend_common.logger import get_logger, get_usage_logger
@@ -67,10 +73,16 @@ class BaseAgent[DepsType, OutputType](ABC):
         self._postprocessors: list[Preprocessor] = self._get_postprocessors()
         self._stream_postprocessors: list[Preprocessor] = self._get_stream_postprocessors()
 
+        # Build the OpenAI client explicitly with max_retries=0 so the SDK's built-in
+        # retry layer does not multiply with AsyncTenacityTransport (e.g. 3 x 3 = 9 attempts).
+        # Retries are handled solely by tenacity, which also honours Retry-After.
         provider = OpenAIProvider(
-            base_url=config.llm_url,
-            api_key=config.llm_api_key,
-            http_client=self._build_http_client(),
+            openai_client=AsyncOpenAI(
+                base_url=config.llm_url,
+                api_key=config.llm_api_key,
+                http_client=self._build_http_client(),
+                max_retries=0,
+            )
         )
 
         profile = OpenAIModelProfile(
@@ -92,13 +104,29 @@ class BaseAgent[DepsType, OutputType](ABC):
     def _build_http_client(self) -> httpx.AsyncClient:
         """httpx client with tenacity retries for transient vLLM / network errors.
 
-        Retries on connection/transport errors and non-2xx responses (incl. 429).
-        Honors the ``Retry-After`` header on rate limits, falling back to exponential
-        backoff. Retry count comes from ``config.llm_max_retries``.
+        Retries on transport errors and non-2xx responses (incl. 429), with one
+        exception noted below. Honors the ``Retry-After`` header on rate limits, falling
+        back to exponential backoff. Retry count comes from ``config.llm_max_retries``.
+
+        **Not** retried: :class:`httpx.ConnectError`. Nothing is listening on the other
+        end, and no amount of backoff changes that. Retrying it converts "the model is
+        down" from something the caller can report immediately into seconds of delay per
+        call, paid again for every call the caller goes on to make. A caller that wants
+        to ride out a rolling restart of the model should retry at its own level, where
+        it can also decide to abandon the whole job instead of paying the cost per
+        request.
+
+        :class:`httpx.ConnectTimeout` is deliberately unaffected: it derives from
+        ``TimeoutException``, not from ``ConnectError``, so it stays retried — a
+        connection accepted slowly is exactly the transient case worth waiting out.
         """
         transport = AsyncTenacityTransport(
             config=RetryConfig(
-                retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError)),
+                # Retry all TransportError except ConnectError. Using an exclusion rather
+                # than an allowlist ensures transient issues like RemoteProtocolError
+                # (dropped keepalives on pooled connections) stay retried.
+                retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError))
+                & retry_if_not_exception_type(httpx.ConnectError),
                 wait=wait_retry_after(
                     fallback_strategy=wait_exponential(multiplier=1, max=60),
                     max_wait=300,

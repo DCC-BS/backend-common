@@ -138,9 +138,49 @@ class TestInit:
             patch("dcc_backend_common.llm_agent.base_agent.OpenAIProvider") as mock_provider,
         ):
             ConcreteAgent(config)
-        client = mock_provider.call_args[1]["http_client"]
+        openai_client = mock_provider.call_args[1]["openai_client"]
+        client = openai_client._client
         assert isinstance(client, httpx.AsyncClient)
         assert isinstance(client._transport, AsyncTenacityTransport)
+
+    def test_openai_sdk_does_not_retry_on_top_of_tenacity(self, config):
+        """Otherwise the two retry layers multiply: `llm_max_retries=2` means 9 requests.
+
+        The SDK's default is 2, and it wraps the httpx client that the tenacity
+        transport already retries inside — so the attempts compose as a product, not a
+        sum, and `test_retry_stop_is_max_retries_plus_one` below stops being true of
+        what actually reaches the network.
+        """
+        with (
+            patch("dcc_backend_common.llm_agent.base_agent.OpenAIChatModel"),
+            patch("dcc_backend_common.llm_agent.base_agent.OpenAIProvider") as mock_provider,
+        ):
+            ConcreteAgent(config)
+        assert mock_provider.call_args[1]["openai_client"].max_retries == 0
+
+    def test_a_refused_connection_is_not_retried(self, config):
+        """Nothing is listening; backoff cannot change that, it only delays the error."""
+        with (
+            patch("dcc_backend_common.llm_agent.base_agent.OpenAIChatModel"),
+            patch("dcc_backend_common.llm_agent.base_agent.OpenAIProvider"),
+        ):
+            agent = ConcreteAgent(config)
+        transport = agent._build_http_client()._transport
+        assert isinstance(transport, AsyncTenacityTransport)
+        should_retry = transport.config["retry"]
+
+        def outcome_for(error: Exception) -> bool:
+            state = MagicMock()
+            state.outcome.failed = True
+            state.outcome.exception.return_value = error
+            return should_retry(state)
+
+        assert outcome_for(httpx.ConnectError("refused")) is False
+        # A connection *accepted slowly* is a different thing and stays retried:
+        # ConnectTimeout derives from TimeoutException, not from ConnectError.
+        assert outcome_for(httpx.ConnectTimeout("slow")) is True
+        assert outcome_for(httpx.ReadTimeout("slow")) is True
+        assert outcome_for(httpx.RemoteProtocolError("dropped keepalive")) is True
 
     def test_retry_stop_is_max_retries_plus_one(self, config):
         # N retries == N+1 total attempts.
