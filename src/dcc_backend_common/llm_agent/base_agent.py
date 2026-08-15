@@ -76,14 +76,13 @@ class BaseAgent[DepsType, OutputType](ABC):
         # Build the OpenAI client explicitly with max_retries=0 so the SDK's built-in
         # retry layer does not multiply with AsyncTenacityTransport (e.g. 3 x 3 = 9 attempts).
         # Retries are handled solely by tenacity, which also honours Retry-After.
-        provider = OpenAIProvider(
-            openai_client=AsyncOpenAI(
-                base_url=config.llm_url,
-                api_key=config.llm_api_key,
-                http_client=self._build_http_client(),
-                max_retries=0,
-            )
+        self._openai_client = AsyncOpenAI(
+            base_url=config.llm_url,
+            api_key=config.llm_api_key,
+            http_client=self._build_http_client(),
+            max_retries=0,
         )
+        provider = OpenAIProvider(openai_client=self._openai_client)
 
         profile = OpenAIModelProfile(
             openai_chat_supports_multiple_system_messages=False,
@@ -279,3 +278,11 @@ class BaseAgent[DepsType, OutputType](ABC):
                 if isinstance(event, AgentRunResultEvent):
                     self._log_result(event.result)
                 yield event
+
+    async def close(self) -> None:
+        """Close the underlying OpenAI client and release resources."""
+        await self._openai_client.close()
+
+    async def cleanup(self) -> None:
+        """Close the underlying OpenAI client and release resources. Alias for :meth:`close`."""
+        await self.close()

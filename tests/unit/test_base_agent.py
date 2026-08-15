@@ -137,8 +137,9 @@ class TestInit:
             patch("dcc_backend_common.llm_agent.base_agent.OpenAIChatModel"),
             patch("dcc_backend_common.llm_agent.base_agent.OpenAIProvider") as mock_provider,
         ):
-            ConcreteAgent(config)
+            agent = ConcreteAgent(config)
         openai_client = mock_provider.call_args[1]["openai_client"]
+        assert agent._openai_client is openai_client
         client = openai_client._client
         assert isinstance(client, httpx.AsyncClient)
         assert isinstance(client._transport, AsyncTenacityTransport)
@@ -630,3 +631,26 @@ class TestStreamingUsageLogging:
 
         assert "".join(chunks) == "hello"
         assert mock_usage_logger.info.call_count == 1
+
+
+class TestCleanup:
+    async def test_close_awaits_openai_client_close(self, agent):
+        agent._openai_client.close = AsyncMock()
+        await agent.close()
+        agent._openai_client.close.assert_awaited_once()
+
+    async def test_cleanup_awaits_close(self, agent):
+        agent.close = AsyncMock()
+        await agent.cleanup()
+        agent.close.assert_awaited_once()
+
+    async def test_close_closes_underlying_http_client(self, config):
+        with (
+            patch("dcc_backend_common.llm_agent.base_agent.OpenAIChatModel"),
+            patch("dcc_backend_common.llm_agent.base_agent.OpenAIProvider"),
+        ):
+            agent = ConcreteAgent(config)
+        http_client = agent._openai_client._client
+        assert not http_client.is_closed
+        await agent.close()
+        assert http_client.is_closed
