@@ -79,7 +79,7 @@ class BaseAgent[DepsType, OutputType](ABC):
         self._openai_client = AsyncOpenAI(
             base_url=config.llm_url,
             api_key=config.llm_api_key,
-            http_client=self._build_http_client(),
+            http_client=cast(Any, self._build_http_client()),
             max_retries=0,
         )
         provider = OpenAIProvider(openai_client=self._openai_client)
@@ -228,7 +228,7 @@ class BaseAgent[DepsType, OutputType](ABC):
         class Container(TypedDict):
             list: list[T]
 
-        async with self._agent.run_stream(
+        async with self._agent.run_stream(  # ty: ignore[no-matching-overload]
             user_prompt=self.process_prompt(user_prompt, deps),
             output_type=Container,
             deps=deps,
@@ -250,7 +250,7 @@ class BaseAgent[DepsType, OutputType](ABC):
         """Stream raw structured output chunks as they are validated."""
         ms = self._extract_model_settings(kwargs)
 
-        async with self._agent.run_stream(
+        async with self._agent.run_stream(  # ty: ignore[no-matching-overload]
             user_prompt=self.process_prompt(user_prompt, deps), deps=deps, model_settings=ms, **kwargs
         ) as result:
             async for chunk in result.stream_output():
