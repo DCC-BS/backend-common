@@ -45,6 +45,40 @@ type Preprocessor = Callable[[Any, PostprocessingContext], Any]
 # Sentinel context for non-streaming (complete) output.
 _FINAL = PostprocessingContext(is_partial=False, index=0)
 
+# 4xx statuses whose cause is transient, so a later attempt can legitimately differ:
+# the request was too slow (408), raced another one (409), arrived too early for a
+# replayed early-data handshake (425), or was rate limited (429). Every other 4xx is a
+# statement about the request itself and will be answered identically forever.
+# 5xx is retryable wholesale and is handled by the ``>= 500`` check below.
+_RETRYABLE_CLIENT_ERRORS = frozenset({408, 409, 425, 429})
+
+
+def _validate_response(response: httpx.Response) -> None:
+    """Raise only for statuses worth another attempt; let the rest through untouched.
+
+    ``raise_for_status()`` would be the obvious body here, and it is wrong for two
+    reasons that share one cause. Any exception raised inside the httpx stack that is
+    not the OpenAI SDK's own ``APIStatusError`` gets reclassified by the SDK as
+    ``APIConnectionError``, which pydantic-ai surfaces as ``ModelAPIError: Connection
+    error.`` So raising here on a 400 both burns ``llm_max_retries`` attempts on a
+    verdict that cannot change, and replaces the server's explanation of what was wrong
+    with the request with a message that points at the network instead.
+
+    Returning normally hands the response back to the SDK, which reads the body and
+    raises ``APIStatusError`` itself; pydantic-ai maps that to ``ModelHTTPError``
+    carrying the status code and the body. A caller debugging a rejected request gets
+    the server's own words.
+
+    Retryable statuses still raise, because raising is what drives the tenacity loop.
+    Those exhaust into the same ``Connection error.`` message, which is a fair
+    description of a model that stayed unavailable across every attempt.
+    """
+    status = response.status_code
+    if status < 400:
+        return
+    if status >= 500 or status in _RETRYABLE_CLIENT_ERRORS:
+        response.raise_for_status()
+
 
 class BaseAgent[DepsType, OutputType](ABC):
     """Abstract base class for reusable pydantic AI agents with full feature support."""
@@ -103,9 +137,14 @@ class BaseAgent[DepsType, OutputType](ABC):
     def _build_http_client(self) -> httpx.AsyncClient:
         """httpx client with tenacity retries for transient vLLM / network errors.
 
-        Retries on transport errors and non-2xx responses (incl. 429), with one
-        exception noted below. Honors the ``Retry-After`` header on rate limits, falling
-        back to exponential backoff. Retry count comes from ``config.llm_max_retries``.
+        Retries on transport errors, 5xx, and the transient 4xx statuses listed in
+        ``_RETRYABLE_CLIENT_ERRORS`` — with one exception noted below. Honors the
+        ``Retry-After`` header on rate limits, falling back to exponential backoff.
+        Retry count comes from ``config.llm_max_retries``.
+
+        Other 4xx responses are deliberately *not* retried and not raised here; see
+        :func:`_validate_response` for why that is what makes the server's own error
+        message reach the caller.
 
         **Not** retried: :class:`httpx.ConnectError`. Nothing is listening on the other
         end, and no amount of backoff changes that. Retrying it converts "the model is
@@ -134,7 +173,7 @@ class BaseAgent[DepsType, OutputType](ABC):
                 stop=stop_after_attempt(self.config.llm_max_retries + 1),
                 reraise=True,
             ),
-            validate_response=lambda r: r.raise_for_status(),
+            validate_response=_validate_response,
         )
         return httpx.AsyncClient(transport=transport, timeout=self.config.llm_timeout)
 
