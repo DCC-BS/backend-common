@@ -329,7 +329,9 @@ class BaseAgent[DepsType, OutputType](ABC):
         accounted for.
         """
         ms = self._extract_model_settings(kwargs)
-        usage = RunUsage()
+        usage = kwargs.pop("usage", None)
+        if usage is None:
+            usage = RunUsage()
         logged = False
 
         try:

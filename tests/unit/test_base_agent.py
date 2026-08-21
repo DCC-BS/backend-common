@@ -10,6 +10,7 @@ import pytest
 from pydantic_ai import AgentRunResultEvent, PartDeltaEvent, PartStartEvent
 from pydantic_ai.messages import TextPart, TextPartDelta, ThinkingPart, ThinkingPartDelta
 from pydantic_ai.retries import AsyncTenacityTransport
+from pydantic_ai.usage import RunUsage
 from tenacity import retry_base, stop_after_attempt
 
 from dcc_backend_common.llm_agent.base_agent import BaseAgent
@@ -638,6 +639,9 @@ class TestStreamingUsageLogging:
 
         @asynccontextmanager
         async def fake_ctx(**kw):
+            kw["usage"].requests = 1
+            kw["usage"].input_tokens = 10
+            kw["usage"].output_tokens = 5
             yield fake_stream_events(*events)
 
         agent._agent.run_stream_events = fake_ctx
@@ -651,7 +655,28 @@ class TestStreamingUsageLogging:
             assert mock_log.call_count == 1, "aborted stream must log usage exactly once"
             logged = mock_log.call_args[0][0]
             assert logged.usage is not None
+            assert logged.usage.input_tokens == 10
+            assert logged.usage.output_tokens == 5
+            assert logged.usage.total_tokens == 15
+            assert logged.usage.requests == 1
             assert logged.response.finish_reason is None
+
+    async def test_run_stream_events_reuses_caller_provided_usage(self, agent):
+        custom_usage = RunUsage(input_tokens=5, output_tokens=3, requests=1)
+        captured_kwargs: dict[str, Any] = {}
+
+        @asynccontextmanager
+        async def fake_ctx(**kw):
+            nonlocal captured_kwargs
+            captured_kwargs = kw
+            yield fake_stream_events(make_text_start("hi"), make_run_result_event("hi"))
+
+        agent._agent.run_stream_events = fake_ctx
+
+        with patch("dcc_backend_common.usage_tracking.usage_tracking.get_usage_logger"):
+            [e async for e in agent.run_stream_events("prompt", usage=custom_usage)]
+
+        assert captured_kwargs.get("usage") is custom_usage
 
 
 class TestCleanup:
