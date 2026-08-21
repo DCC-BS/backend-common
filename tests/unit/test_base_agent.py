@@ -632,6 +632,27 @@ class TestStreamingUsageLogging:
         assert "".join(chunks) == "hello"
         assert mock_usage_logger.info.call_count == 1
 
+    async def test_usage_is_logged_when_consumer_exits_before_result_event(self, agent):
+        """An SSE client that disconnects mid-stream must still have its tokens recorded."""
+        events = [make_text_start("hi"), make_run_result_event("hi")]
+
+        @asynccontextmanager
+        async def fake_ctx(**kw):
+            yield fake_stream_events(*events)
+
+        agent._agent.run_stream_events = fake_ctx
+
+        with patch("dcc_backend_common.llm_agent.base_agent.log_llm_call") as mock_log:
+            stream = agent.run_stream_events("prompt")
+            async for _event in stream:
+                break  # consumer gives up before AgentRunResultEvent arrives
+            await stream.aclose()
+
+            assert mock_log.call_count == 1, "aborted stream must log usage exactly once"
+            logged = mock_log.call_args[0][0]
+            assert logged.usage is not None
+            assert logged.response.finish_reason is None
+
 
 class TestCleanup:
     async def test_close_awaits_openai_client_close(self, agent):
