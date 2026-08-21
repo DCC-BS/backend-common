@@ -654,3 +654,67 @@ class TestCleanup:
         assert not http_client.is_closed
         await agent.close()
         assert http_client.is_closed
+
+
+class TestValidateResponse:
+    """A 4xx the server will answer identically on every retry must not be retried, and
+    must reach the caller carrying the server's explanation.
+
+    Raising `HTTPStatusError` from inside the transport is what destroys that
+    explanation: the OpenAI SDK only recognises its own `APIStatusError`, so any other
+    exception coming out of the httpx stack is reclassified as `APIConnectionError`
+    ("Connection error."), and pydantic-ai turns that into a `ModelAPIError` with no
+    status code and no body. Letting the response through instead lets the SDK raise
+    `APIStatusError` itself, which pydantic-ai maps to `ModelHTTPError` with the body
+    intact.
+    """
+
+    @staticmethod
+    def _response(status_code: int, body: str = "") -> httpx.Response:
+        request = httpx.Request("POST", "http://llm.invalid/v1/chat/completions")
+        return httpx.Response(status_code, request=request, text=body)
+
+    def _validate(self, config, status_code: int, body: str = "") -> None:
+        with (
+            patch("dcc_backend_common.llm_agent.base_agent.OpenAIChatModel"),
+            patch("dcc_backend_common.llm_agent.base_agent.OpenAIProvider"),
+        ):
+            agent = ConcreteAgent(config)
+        transport = agent._build_http_client()._transport
+        assert isinstance(transport, AsyncTenacityTransport)
+        validate = transport.validate_response
+        assert validate is not None
+        validate(self._response(status_code, body))
+
+    @pytest.mark.parametrize("status_code", [400, 401, 403, 404, 413, 422])
+    def test_non_retryable_client_error_passes_through(self, config, status_code):
+        """No exception: the SDK downstream raises APIStatusError with the body."""
+        self._validate(config, status_code)
+
+    def test_context_length_error_body_is_not_swallowed(self, config):
+        """The concrete case this fixes: vLLM rejects an over-long prompt with a 400
+        whose body says so. That body is the only place the real cause appears.
+        """
+        body = (
+            '{"error":{"message":"This model\'s maximum context length is 448 tokens.'
+            " However, you requested 0 output tokens and your prompt contains 27875"
+            ' characters","type":"BadRequestError","code":400}}'
+        )
+        self._validate(config, 400, body)
+
+    @pytest.mark.parametrize("status_code", [408, 409, 425, 429, 500, 502, 503, 504])
+    def test_retryable_status_still_raises(self, config, status_code):
+        """These do change between attempts, so they must keep driving the retry loop."""
+        with pytest.raises(httpx.HTTPStatusError):
+            self._validate(config, status_code)
+
+    @pytest.mark.parametrize("status_code", [200, 201, 204])
+    def test_success_passes_through(self, config, status_code):
+        self._validate(config, status_code)
+
+    def test_raised_error_names_the_status(self, config):
+        """The retry-exhausted path still collapses into the SDK's "Connection error.",
+        so the status has to be legible in the exception chain instead.
+        """
+        with pytest.raises(httpx.HTTPStatusError, match="503"):
+            self._validate(config, 503)
