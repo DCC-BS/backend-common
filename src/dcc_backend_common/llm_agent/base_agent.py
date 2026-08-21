@@ -2,6 +2,7 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Callable, Sequence
+from dataclasses import dataclass
 from typing import Any, TypedDict, cast
 
 import httpx
@@ -23,6 +24,7 @@ from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.result import StreamedRunResult
 from pydantic_ai.retries import AsyncTenacityTransport, RetryConfig, wait_retry_after
+from pydantic_ai.usage import RunUsage
 from tenacity import (
     retry_if_exception_type,
     retry_if_not_exception_type,
@@ -51,6 +53,22 @@ _FINAL = PostprocessingContext(is_partial=False, index=0)
 # statement about the request itself and will be answered identically forever.
 # 5xx is retryable wholesale and is handled by the ``>= 500`` check below.
 _RETRYABLE_CLIENT_ERRORS = frozenset({408, 409, 425, 429})
+
+
+@dataclass(frozen=True)
+class _AbortedResponse:
+    """Minimal response stand-in for a run that never produced a final response."""
+
+    parts: tuple[()] = ()
+    finish_reason: None = None
+
+
+@dataclass(frozen=True)
+class _AbortedRun:
+    """Duck-typed ``log_llm_call`` input carrying only the usage accrued so far."""
+
+    usage: Any
+    response: _AbortedResponse = _AbortedResponse()
 
 
 def _validate_response(response: httpx.Response) -> None:
@@ -305,18 +323,33 @@ class BaseAgent[DepsType, OutputType](ABC):
     ) -> AsyncGenerator[AgentStreamEvent | AgentRunResultEvent[OutputType]]:
         """Stream raw pydantic-ai events. No postprocessing; use run() for a postprocessed final result.
 
-        Emits the llm_call usage log when the final AgentRunResultEvent arrives, so
-        streaming callers (run_stream_text and direct users) are tracked like run().
+        Usage is logged exactly once: from the final AgentRunResultEvent when the run
+        completes, or — if the consumer stops early, as an SSE client that disconnects
+        does — from the usage accrued up to that point, so abandoned runs are still
+        accounted for.
         """
         ms = self._extract_model_settings(kwargs)
+        usage = kwargs.pop("usage", None)
+        if usage is None:
+            usage = RunUsage()
+        logged = False
 
-        async with self._agent.run_stream_events(  # ty: ignore[no-matching-overload]
-            user_prompt=self.process_prompt(user_prompt, deps), deps=deps, model_settings=ms, **kwargs
-        ) as stream:
-            async for event in stream:
-                if isinstance(event, AgentRunResultEvent):
-                    self._log_result(event.result)
-                yield event
+        try:
+            async with self._agent.run_stream_events(  # ty: ignore[no-matching-overload]
+                user_prompt=self.process_prompt(user_prompt, deps),
+                deps=deps,
+                model_settings=ms,
+                usage=usage,
+                **kwargs,
+            ) as stream:
+                async for event in stream:
+                    if isinstance(event, AgentRunResultEvent):
+                        self._log_result(event.result)
+                        logged = True
+                    yield event
+        finally:
+            if not logged:
+                log_llm_call(_AbortedRun(usage=usage))
 
     async def close(self) -> None:
         """Close the underlying OpenAI client and release resources."""
