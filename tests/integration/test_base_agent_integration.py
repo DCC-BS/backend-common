@@ -6,7 +6,7 @@ Run with:
 
 import os
 
-import httpx
+import httpx2
 import pytest
 from pydantic import BaseModel
 from pydantic_ai import Agent, AgentRunResultEvent, AgentStreamEvent, PartDeltaEvent, PartStartEvent
@@ -413,7 +413,7 @@ async def test_timeout_from_config_reaches_model_settings():
 
 @pytest.mark.integration
 async def test_unreachable_endpoint_reraises_underlying_transport_error():
-    """AsyncTenacityTransport uses reraise=True: the httpx error surfaces, not a tenacity RetryError.
+    """AsyncHTTPX2TenacityTransport uses reraise=True: the httpx2 error surfaces, not a tenacity RetryError.
 
     pydantic-ai maps it to ModelAPIError, so assert on the exception chain instead.
     """
@@ -435,5 +435,5 @@ async def test_unreachable_endpoint_reraises_underlying_transport_error():
         causes.append(err)
         err = err.__cause__
 
-    assert any(isinstance(e, httpx.TransportError) for e in causes), f"transport error swallowed: {causes}"
+    assert any(isinstance(e, httpx2.TransportError) for e in causes), f"transport error swallowed: {causes}"
     assert not any(isinstance(e, RetryError) for e in causes), "tenacity RetryError leaked; reraise=True is not set"

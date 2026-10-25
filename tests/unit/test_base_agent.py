@@ -5,11 +5,11 @@ from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
+import httpx2
 import pytest
 from pydantic_ai import AgentRunResultEvent, PartDeltaEvent, PartStartEvent
 from pydantic_ai.messages import TextPart, TextPartDelta, ThinkingPart, ThinkingPartDelta
-from pydantic_ai.retries import AsyncTenacityTransport
+from pydantic_ai.retries import AsyncHTTPX2TenacityTransport
 from pydantic_ai.usage import RunUsage
 from tenacity import retry_base, stop_after_attempt
 
@@ -142,13 +142,13 @@ class TestInit:
         openai_client = mock_provider.call_args[1]["openai_client"]
         assert agent._openai_client is openai_client
         client = openai_client._client
-        assert isinstance(client, httpx.AsyncClient)
-        assert isinstance(client._transport, AsyncTenacityTransport)
+        assert isinstance(client, httpx2.AsyncClient)
+        assert isinstance(client._transport, AsyncHTTPX2TenacityTransport)
 
     def test_openai_sdk_does_not_retry_on_top_of_tenacity(self, config):
         """Otherwise the two retry layers multiply: `llm_max_retries=2` means 9 requests.
 
-        The SDK's default is 2, and it wraps the httpx client that the tenacity
+        The SDK's default is 2, and it wraps the httpx2 client that the tenacity
         transport already retries inside — so the attempts compose as a product, not a
         sum, and `test_retry_stop_is_max_retries_plus_one` below stops being true of
         what actually reaches the network.
@@ -168,7 +168,7 @@ class TestInit:
         ):
             agent = ConcreteAgent(config)
         transport = agent._build_http_client()._transport
-        assert isinstance(transport, AsyncTenacityTransport)
+        assert isinstance(transport, AsyncHTTPX2TenacityTransport)
         should_retry = transport.config["retry"]
         assert isinstance(should_retry, retry_base)
 
@@ -178,12 +178,12 @@ class TestInit:
             state.outcome.exception.return_value = error
             return should_retry(state)
 
-        assert outcome_for(httpx.ConnectError("refused")) is False
+        assert outcome_for(httpx2.ConnectError("refused")) is False
         # A connection *accepted slowly* is a different thing and stays retried:
         # ConnectTimeout derives from TimeoutException, not from ConnectError.
-        assert outcome_for(httpx.ConnectTimeout("slow")) is True
-        assert outcome_for(httpx.ReadTimeout("slow")) is True
-        assert outcome_for(httpx.RemoteProtocolError("dropped keepalive")) is True
+        assert outcome_for(httpx2.ConnectTimeout("slow")) is True
+        assert outcome_for(httpx2.ReadTimeout("slow")) is True
+        assert outcome_for(httpx2.RemoteProtocolError("dropped keepalive")) is True
 
     def test_retry_stop_is_max_retries_plus_one(self, config):
         # N retries == N+1 total attempts.
@@ -193,7 +193,7 @@ class TestInit:
         ):
             a = ConcreteAgent(make_config(max_retries=4))
         transport = a._build_http_client()._transport
-        assert isinstance(transport, AsyncTenacityTransport)
+        assert isinstance(transport, AsyncHTTPX2TenacityTransport)
         stop = transport.config["stop"]
         assert isinstance(stop, stop_after_attempt)
         assert stop.max_attempt_number == 5
@@ -708,7 +708,7 @@ class TestValidateResponse:
 
     Raising `HTTPStatusError` from inside the transport is what destroys that
     explanation: the OpenAI SDK only recognises its own `APIStatusError`, so any other
-    exception coming out of the httpx stack is reclassified as `APIConnectionError`
+    exception coming out of the HTTP client stack is reclassified as `APIConnectionError`
     ("Connection error."), and pydantic-ai turns that into a `ModelAPIError` with no
     status code and no body. Letting the response through instead lets the SDK raise
     `APIStatusError` itself, which pydantic-ai maps to `ModelHTTPError` with the body
@@ -716,9 +716,9 @@ class TestValidateResponse:
     """
 
     @staticmethod
-    def _response(status_code: int, body: str = "") -> httpx.Response:
-        request = httpx.Request("POST", "http://llm.invalid/v1/chat/completions")
-        return httpx.Response(status_code, request=request, text=body)
+    def _response(status_code: int, body: str = "") -> httpx2.Response:
+        request = httpx2.Request("POST", "http://llm.invalid/v1/chat/completions")
+        return httpx2.Response(status_code, request=request, text=body)
 
     def _validate(self, config, status_code: int, body: str = "") -> None:
         with (
@@ -727,7 +727,7 @@ class TestValidateResponse:
         ):
             agent = ConcreteAgent(config)
         transport = agent._build_http_client()._transport
-        assert isinstance(transport, AsyncTenacityTransport)
+        assert isinstance(transport, AsyncHTTPX2TenacityTransport)
         validate = transport.validate_response
         assert validate is not None
         validate(self._response(status_code, body))
@@ -751,7 +751,7 @@ class TestValidateResponse:
     @pytest.mark.parametrize("status_code", [408, 409, 425, 429, 500, 502, 503, 504])
     def test_retryable_status_still_raises(self, config, status_code):
         """These do change between attempts, so they must keep driving the retry loop."""
-        with pytest.raises(httpx.HTTPStatusError):
+        with pytest.raises(httpx2.HTTPStatusError):
             self._validate(config, status_code)
 
     @pytest.mark.parametrize("status_code", [200, 201, 204])
@@ -762,5 +762,5 @@ class TestValidateResponse:
         """The retry-exhausted path still collapses into the SDK's "Connection error.",
         so the status has to be legible in the exception chain instead.
         """
-        with pytest.raises(httpx.HTTPStatusError, match="503"):
+        with pytest.raises(httpx2.HTTPStatusError, match="503"):
             self._validate(config, 503)

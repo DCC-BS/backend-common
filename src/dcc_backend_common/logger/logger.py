@@ -40,7 +40,7 @@ production. Extend per app via ``init_logger(extra_event_types=...)``.
 """
 
 # Libraries whose INFO chatter (e.g. httpx "HTTP Request: ...") pollutes prod logs.
-_QUIET_LIBRARIES = ("httpx", "httpcore", "openai", "urllib3", "aiohttp")
+_QUIET_LIBRARIES = ("httpx", "httpx2", "httpcore", "openai", "urllib3", "aiohttp")
 
 # Loggers that uvicorn / fastapi-cli attach their own (Rich) handlers to. Their
 # handlers are removed so records flow through the root handler's single pipeline.
