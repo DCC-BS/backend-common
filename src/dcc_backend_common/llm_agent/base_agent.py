@@ -5,7 +5,7 @@ from collections.abc import AsyncGenerator, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, TypedDict, cast
 
-import httpx
+import httpx2
 from openai import AsyncOpenAI
 from pydantic_ai import (
     Agent,
@@ -23,7 +23,7 @@ from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.result import StreamedRunResult
-from pydantic_ai.retries import AsyncTenacityTransport, RetryConfig, wait_retry_after
+from pydantic_ai.retries import AsyncHTTPX2TenacityTransport, RetryConfig, wait_retry_after
 from pydantic_ai.usage import RunUsage
 from tenacity import (
     retry_if_exception_type,
@@ -71,11 +71,11 @@ class _AbortedRun:
     response: _AbortedResponse = _AbortedResponse()
 
 
-def _validate_response(response: httpx.Response) -> None:
+def _validate_response(response: httpx2.Response) -> None:
     """Raise only for statuses worth another attempt; let the rest through untouched.
 
     ``raise_for_status()`` would be the obvious body here, and it is wrong for two
-    reasons that share one cause. Any exception raised inside the httpx stack that is
+    reasons that share one cause. Any exception raised inside the HTTP client stack that is
     not the OpenAI SDK's own ``APIStatusError`` gets reclassified by the SDK as
     ``APIConnectionError``, which pydantic-ai surfaces as ``ModelAPIError: Connection
     error.`` So raising here on a 400 both burns ``llm_max_retries`` attempts on a
@@ -126,7 +126,7 @@ class BaseAgent[DepsType, OutputType](ABC):
         self._stream_postprocessors: list[Preprocessor] = self._get_stream_postprocessors()
 
         # Build the OpenAI client explicitly with max_retries=0 so the SDK's built-in
-        # retry layer does not multiply with AsyncTenacityTransport (e.g. 3 x 3 = 9 attempts).
+        # retry layer does not multiply with AsyncHTTPX2TenacityTransport (e.g. 3 x 3 = 9 attempts).
         # Retries are handled solely by tenacity, which also honours Retry-After.
         self._openai_client = AsyncOpenAI(
             base_url=config.llm_url,
@@ -152,8 +152,8 @@ class BaseAgent[DepsType, OutputType](ABC):
 
         self._agent = self.create_agent(self._model)
 
-    def _build_http_client(self) -> httpx.AsyncClient:
-        """httpx client with tenacity retries for transient vLLM / network errors.
+    def _build_http_client(self) -> httpx2.AsyncClient:
+        """httpx2 client with tenacity retries for transient vLLM / network errors.
 
         Retries on transport errors, 5xx, and the transient 4xx statuses listed in
         ``_RETRYABLE_CLIENT_ERRORS`` — with one exception noted below. Honors the
@@ -164,7 +164,7 @@ class BaseAgent[DepsType, OutputType](ABC):
         :func:`_validate_response` for why that is what makes the server's own error
         message reach the caller.
 
-        **Not** retried: :class:`httpx.ConnectError`. Nothing is listening on the other
+        **Not** retried: :class:`httpx2.ConnectError`. Nothing is listening on the other
         end, and no amount of backoff changes that. Retrying it converts "the model is
         down" from something the caller can report immediately into seconds of delay per
         call, paid again for every call the caller goes on to make. A caller that wants
@@ -172,17 +172,17 @@ class BaseAgent[DepsType, OutputType](ABC):
         it can also decide to abandon the whole job instead of paying the cost per
         request.
 
-        :class:`httpx.ConnectTimeout` is deliberately unaffected: it derives from
+        :class:`httpx2.ConnectTimeout` is deliberately unaffected: it derives from
         ``TimeoutException``, not from ``ConnectError``, so it stays retried — a
         connection accepted slowly is exactly the transient case worth waiting out.
         """
-        transport = AsyncTenacityTransport(
+        transport = AsyncHTTPX2TenacityTransport(
             config=RetryConfig(
                 # Retry all TransportError except ConnectError. Using an exclusion rather
                 # than an allowlist ensures transient issues like RemoteProtocolError
                 # (dropped keepalives on pooled connections) stay retried.
-                retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TransportError))
-                & retry_if_not_exception_type(httpx.ConnectError),
+                retry=retry_if_exception_type((httpx2.HTTPStatusError, httpx2.TransportError))
+                & retry_if_not_exception_type(httpx2.ConnectError),
                 wait=wait_retry_after(
                     fallback_strategy=wait_exponential(multiplier=1, max=60),
                     max_wait=300,
@@ -193,7 +193,7 @@ class BaseAgent[DepsType, OutputType](ABC):
             ),
             validate_response=_validate_response,
         )
-        return httpx.AsyncClient(transport=transport, timeout=self.config.llm_timeout)
+        return httpx2.AsyncClient(transport=transport, timeout=self.config.llm_timeout)
 
     def _get_postprocessors(self) -> list[Preprocessor]:
         """Override to customise the postprocessing pipeline."""

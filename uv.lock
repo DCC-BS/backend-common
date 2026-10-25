@@ -762,7 +762,7 @@ fastapi = [
     { name = "fastapi" },
 ]
 pydantic-ai = [
-    { name = "httpx" },
+    { name = "httpx2" },
     { name = "pydantic-ai" },
     { name = "pydantic-ai-slim", extra = ["openai"] },
     { name = "tenacity" },
@@ -786,7 +786,7 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'fastapi'", specifier = ">=3.13.3" },
     { name = "datasets", specifier = ">=4.5.0" },
     { name = "fastapi", marker = "extra == 'fastapi'", specifier = ">=0.136.0,<1.0" },
-    { name = "httpx", marker = "extra == 'pydantic-ai'", specifier = ">=0.27" },
+    { name = "httpx2", marker = "extra == 'pydantic-ai'", specifier = ">=2.16" },
     { name = "jiwer", specifier = ">=4.0.0" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "pydantic-ai", marker = "extra == 'pydantic-ai'", specifier = ">=2.0.0" },

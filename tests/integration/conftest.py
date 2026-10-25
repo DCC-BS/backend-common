@@ -20,7 +20,7 @@ def logfire_instrumentation():
     # the instrumentation below writes into has to ask for it explicitly.
     logfire.configure(send_to_logfire="if-token-present", service_name="backend-common-integration")
     logfire.instrument_pydantic_ai()
-    # Captures the underlying HTTP calls so retries made by AsyncTenacityTransport are visible.
+    # Captures the underlying HTTP calls so retries made by AsyncHTTPX2TenacityTransport are visible.
     logfire.instrument_httpx(capture_headers=False)
     yield logfire
     logfire.force_flush()
