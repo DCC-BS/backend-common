@@ -34,7 +34,7 @@ fastapi = [
 
 pydantic_ai = [
     "pydantic-ai>=2.32.0",
-    "pydantic-ai-slim[openai]>=2.32.0",
+    "pydantic-ai-slim[openai,retries]>=2.32.0",
     "httpx2>=2.7",  # same floor as pydantic-ai
     "tenacity>=8.0",
 ]

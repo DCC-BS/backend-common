@@ -793,7 +793,7 @@ fastapi = [
 pydantic-ai = [
     { name = "httpx2" },
     { name = "pydantic-ai" },
-    { name = "pydantic-ai-slim", extra = ["openai"] },
+    { name = "pydantic-ai-slim", extra = ["openai", "retries"] },
     { name = "tenacity" },
 ]
 
@@ -819,7 +819,7 @@ requires-dist = [
     { name = "jiwer", specifier = ">=4.0.0" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "pydantic-ai", marker = "extra == 'pydantic-ai'", specifier = ">=2.32.0" },
-    { name = "pydantic-ai-slim", extras = ["openai"], marker = "extra == 'pydantic-ai'", specifier = ">=2.32.0" },
+    { name = "pydantic-ai-slim", extras = ["openai", "retries"], marker = "extra == 'pydantic-ai'", specifier = ">=2.32.0" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
     { name = "structlog", specifier = ">=25.5.0" },
     { name = "tenacity", marker = "extra == 'pydantic-ai'", specifier = ">=8.0" },
@@ -2359,6 +2359,10 @@ mcp = [
 openai = [
     { name = "openai" },
     { name = "tiktoken" },
+]
+retries = [
+    { name = "httpx" },
+    { name = "tenacity" },
 ]
 web = [
     { name = "starlette" },
