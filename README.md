@@ -281,12 +281,17 @@ log contract's types before rendering:
 
 - `level` is always one of `debug`, `info`, `warning`, `error`, `critical`
   (stdlib/custom levels such as `warn`, `fatal`, `trace` are mapped).
-- Custom fields are flat scalars: dicts, lists, tuples and sets are serialized
-  to a JSON string, other objects to `str()`. Log `status=503`, not
+- Custom fields are flat scalars. A dict, list, tuple or set under `key` is
+  serialized to a JSON string under `key_json` (`key` is dropped), so the
+  string never clashes with an object that other apps or older versions still
+  send under `key` — OpenSearch rejects the whole line on a type clash. Other
+  objects become `str()` under their own key (`repr()` if `__str__` fails);
+  `nan`/`inf` floats become strings. Log `status=503`, not
   `response={"status": 503}`.
 - An exception passed as `error=exc` becomes `str(exc)` plus `error_type`
   (class name); `exception=exc` becomes the traceback string.
-- `status_code` must be an int and `duration_s` a number: lossless
+- `status_code` must be an int and `duration_s` a finite float (ints are
+  emitted as floats): lossless
   conversions (`"200"` → `200`) are applied, anything else is moved to
   `status_code_raw` / `duration_s_raw`. Other reserved fields (`message`,
   `error`, `path`, `request_id`, ...) are coerced to strings. A caller-supplied

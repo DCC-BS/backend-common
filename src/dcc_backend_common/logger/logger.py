@@ -210,8 +210,33 @@ def _normalize_level_field(logger: WrappedLogger, method_name: str, event_dict: 
     return event_dict
 
 
+def safe_str(value: object) -> str:
+    """``str(value)`` that never raises: falls back to ``repr()``, then ``"<unprintable>"``.
+
+    A log call must never fail (and drop the line) because an object's
+    ``__str__`` is broken.
+    """
+    for convert in (str, repr):
+        try:
+            return convert(value)
+        except Exception:  # noqa: S112
+            continue
+    return "<unprintable>"
+
+
+def _is_container(value: object) -> bool:
+    return isinstance(value, (dict, list, tuple, set, frozenset))
+
+
 def _to_flat_scalar(value: object) -> object:
-    """Serialize a non-scalar value to a string: JSON for containers, ``str()`` otherwise."""
+    """
+    Serialize a non-scalar value to a string: JSON for containers, ``str()`` otherwise.
+
+    Non-finite floats become ``"nan"`` / ``"inf"`` / ``"-inf"``: JSONRenderer
+    would emit bare ``NaN`` / ``Infinity``, which is not valid JSON.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
     if isinstance(value, _SCALAR_TYPES):
         return value
     if isinstance(value, (set, frozenset)):
@@ -221,10 +246,10 @@ def _to_flat_scalar(value: object) -> object:
             value = list(value)
     if isinstance(value, (dict, list, tuple)):
         try:
-            return json.dumps(value, default=str, ensure_ascii=False)
-        except (TypeError, ValueError):
-            return str(value)
-    return str(value)
+            return json.dumps(value, default=safe_str, ensure_ascii=False, allow_nan=False)
+        except Exception:
+            return safe_str(value)
+    return safe_str(value)
 
 
 def _coerce_number(value: object, *, integer: bool) -> int | float | None:
@@ -233,7 +258,7 @@ def _coerce_number(value: object, *, integer: bool) -> int | float | None:
         return None
     try:
         number = float(value)  # ty: ignore[invalid-argument-type]
-    except (TypeError, ValueError):
+    except Exception:
         return None
     if not math.isfinite(number):
         return None
@@ -253,14 +278,21 @@ def _enforce_contract_types(logger: WrappedLogger, method_name: str, event_dict:
     - An exception passed as ``error=exc`` becomes ``str(exc)``;
       ``exception=exc`` becomes its formatted traceback. Both set
       ``error_type`` to the class name unless the caller set it.
-    - ``status_code`` must be an int and ``duration_s`` a finite number. Values
-      that convert losslessly (``"200"``, ``200.0``, ``"0.5"``) are converted;
-      anything else moves to ``status_code_raw`` / ``duration_s_raw`` as a
-      string, so the reserved field keeps its type and the value is kept.
+    - ``status_code`` must be an int and ``duration_s`` a finite float (ints
+      are emitted as floats, so the first line of the day never maps it as
+      ``long``). Values that convert losslessly (``"200"``, ``200.0``,
+      ``"0.5"``) are converted; anything else moves to ``status_code_raw`` /
+      ``duration_s_raw`` as a string, so the reserved field keeps its type and
+      the value is kept.
     - Other reserved fields (``message``, ``event``, ``error``, ``path``, ...)
       are coerced to strings.
-    - Every custom field is flattened to a scalar: dict/list/tuple/set become
-      a JSON string, any other object ``str()``.
+    - Every custom field is flattened to a scalar. A dict/list/tuple/set
+      ``key`` becomes a JSON string under ``<key>_json`` (and ``key`` is
+      dropped), so the string never shares a field name with the object that
+      older library versions or other apps still send under ``key`` —
+      OpenSearch rejects the whole document on such a type clash. Any other
+      object becomes ``str()`` under its own key, and non-finite floats
+      become ``"nan"`` / ``"inf"``.
 
     A caller-supplied ``timestamp``, ``level`` or ``logger`` never reaches this
     point: the pipeline overwrites them with the real values earlier.
@@ -270,27 +302,30 @@ def _enforce_contract_types(logger: WrappedLogger, method_name: str, event_dict:
         if isinstance(value, BaseException):
             event_dict.setdefault("error_type", type(value).__name__)
             if key == "error":
-                event_dict[key] = str(value)
+                event_dict[key] = safe_str(value)
             else:
                 event_dict[key] = "".join(traceback.format_exception(value)).rstrip()
 
     for key, integer in (("status_code", True), ("duration_s", False)):
         value = event_dict.get(key)
-        if value is None or type(value) is int or (not integer and type(value) is float and math.isfinite(value)):
+        if value is None or (integer and type(value) is int):
             continue
         number = _coerce_number(value, integer=integer)
         if number is None:
-            event_dict[f"{key}_raw"] = str(event_dict.pop(key))
+            event_dict[f"{key}_raw"] = safe_str(event_dict.pop(key))
         else:
             event_dict[key] = number
 
-    for key, value in event_dict.items():
+    for key, value in list(event_dict.items()):
         if key in ("status_code", "duration_s"):
             continue
         if key in _RESERVED_STR_FIELDS:
             if value is not None and not isinstance(value, str):
                 flat = _to_flat_scalar(value)
-                event_dict[key] = flat if isinstance(flat, str) else str(flat)
+                event_dict[key] = flat if isinstance(flat, str) else safe_str(flat)
+        elif _is_container(value):
+            del event_dict[key]
+            event_dict[f"{key}_json"] = _to_flat_scalar(value)
         else:
             event_dict[key] = _to_flat_scalar(value)
     return event_dict

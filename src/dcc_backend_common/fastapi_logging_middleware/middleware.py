@@ -10,7 +10,7 @@ from starlette.responses import Response
 from starlette.routing import Route
 
 from dcc_backend_common.logger import get_logger
-from dcc_backend_common.logger.logger import asgi_exception_logged
+from dcc_backend_common.logger.logger import asgi_exception_logged, safe_str
 
 logger = get_logger("request")
 
@@ -101,7 +101,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 path=_route_template(request),
                 status_code=500,
                 duration_s=round(time.perf_counter() - start_time, 4),
-                error=str(exc),
+                error=safe_str(exc),
                 error_type=type(exc).__name__,
                 exc_info=True,
             )

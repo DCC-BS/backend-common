@@ -27,21 +27,61 @@ class TestFlatScalars:
         out = enforce({"count": 3, "ratio": 0.5, "ok": True, "name": "x", "missing": None})
         assert out == {"count": 3, "ratio": 0.5, "ok": True, "name": "x", "missing": None}
 
-    def test_dict_and_list_serialized_as_json(self):
+    def test_containers_moved_to_json_suffixed_key(self):
+        # A new string field must never share a name with the object other
+        # apps (or older library versions) still send: OpenSearch rejects the
+        # whole document on such a type clash.
         out = enforce({"options": {"a": 1, "b": [1, 2]}, "ids": [1, 2], "pair": ("a", 1)})
-        assert out["options"] == '{"a": 1, "b": [1, 2]}'
-        assert out["ids"] == "[1, 2]"
-        assert out["pair"] == '["a", 1]'
+        assert out == {
+            "options_json": '{"a": 1, "b": [1, 2]}',
+            "ids_json": "[1, 2]",
+            "pair_json": '["a", 1]',
+        }
 
     def test_set_serialized_as_sorted_json_list(self):
-        assert enforce({"tags": {"b", "a"}})["tags"] == '["a", "b"]'
+        assert enforce({"tags": {"b", "a"}}) == {"tags_json": '["a", "b"]'}
+
+    def test_reserved_field_container_keeps_its_name(self):
+        assert enforce({"path": ["a"]}) == {"path": '["a"]'}
+
+    @pytest.mark.parametrize(
+        ("value", "expected"), [(float("nan"), "nan"), (float("inf"), "inf"), (-float("inf"), "-inf")]
+    )
+    def test_non_finite_custom_float_stringified(self, value, expected):
+        assert enforce({"score": value})["score"] == expected
+
+    def test_non_finite_float_inside_container_stays_valid_json(self):
+        out = enforce({"scores": [float("nan")]})
+        assert out["scores_json"] == "[nan]"
+
+    def test_object_with_broken_str_falls_back_to_repr(self):
+        class Broken:
+            def __str__(self) -> str:
+                raise RuntimeError("no str")
+
+            def __repr__(self) -> str:
+                return "<Broken>"
+
+        assert enforce({"obj": Broken()})["obj"] == "<Broken>"
+        assert enforce({"items": [Broken()]})["items_json"] == '["<Broken>"]'
+
+    def test_object_with_broken_str_and_repr_is_unprintable(self):
+        class Hopeless:
+            def __str__(self) -> str:
+                raise RuntimeError("no str")
+
+            def __repr__(self) -> str:
+                raise RuntimeError("no repr")
+
+        assert enforce({"obj": Hopeless()})["obj"] == "<unprintable>"
+        assert enforce({"error": Hopeless()})["error"] == "<unprintable>"
 
     def test_nested_non_json_values_fall_back_to_str(self):
         class Thing:
             def __str__(self) -> str:
                 return "thing"
 
-        assert enforce({"payload": {"t": Thing()}})["payload"] == '{"t": "thing"}'
+        assert enforce({"payload": {"t": Thing()}})["payload_json"] == '{"t": "thing"}'
 
     def test_arbitrary_object_uses_str(self):
         class Thing:
@@ -87,9 +127,11 @@ class TestReservedFieldTypes:
         assert "status_code" not in out
         assert out["status_code_raw"] == str(value)
 
-    @pytest.mark.parametrize(("value", "expected"), [("0.25", 0.25), (2, 2), (1.5, 1.5)])
-    def test_duration_coerced_to_number(self, value, expected):
-        assert enforce({"duration_s": value})["duration_s"] == expected
+    @pytest.mark.parametrize(("value", "expected"), [("0.25", 0.25), (2, 2.0), (1.5, 1.5)])
+    def test_duration_coerced_to_float(self, value, expected):
+        out = enforce({"duration_s": value})
+        assert out["duration_s"] == expected
+        assert type(out["duration_s"]) is float
 
     @pytest.mark.parametrize("value", ["fast", "nan", False, float("nan"), float("inf"), float("-inf")])
     def test_unconvertible_duration_moved_to_raw(self, value):
@@ -209,7 +251,8 @@ class TestProductionPipeline:
         assert isinstance(line["timestamp"], str)
         assert line["error"] == "refused"
         assert line["error_type"] == "ConnectionError"
-        assert line["response"] == '{"status": 503}'
+        assert "response" not in line
+        assert line["response_json"] == '{"status": 503}'
         assert line["status_code"] == 503
         assert line["app"] == "test-app"
 
