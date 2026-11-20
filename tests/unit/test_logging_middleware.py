@@ -1,7 +1,7 @@
 """Unit tests for the request-completion logging middleware.
 
-The field names asserted here (event, method, path, status_code, duration_s)
-are a contract with OpenSearch dashboard panels and alerting monitors.
+The field names asserted here (event, method, path, status_code, duration_s,
+error, error_type) are a contract with OpenSearch dashboard panels and alerting monitors.
 """
 
 import pytest
@@ -112,6 +112,8 @@ class TestRequestFailed:
         assert kwargs["path"] == "/boom"
         assert kwargs["status_code"] == 500
         assert isinstance(kwargs["duration_s"], float)
+        assert kwargs["error"] == "kaputt"
+        assert kwargs["error_type"] == "RuntimeError"
         assert kwargs["exc_info"] is True
 
 
