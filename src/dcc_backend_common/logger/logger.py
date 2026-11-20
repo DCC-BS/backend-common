@@ -159,29 +159,29 @@ _RESERVED_STR_FIELDS = frozenset({
 _SCALAR_TYPES = (str, int, float, bool, type(None))
 
 
-def _normalize_level(level: object) -> str:
+def _normalize_level(level: object, levelno: int | None = None) -> str:
     """
     Map any level name onto debug|info|warning|error|critical.
 
     structlog already maps ``warn``/``exception``, but stdlib records carry
-    their lowercased ``levelname``, which can be a custom name (``trace``) or
-    ``level 5`` for an unnamed numeric level. Unknown names are bucketed by
-    their numeric value, falling back to ``info``.
+    their lowercased ``levelname``, which can be a custom name (``trace``,
+    ``severe``) or ``level 5`` for an unnamed numeric level. Those are bucketed
+    by the record's numeric ``levelno`` when given, else by the number the name
+    resolves to, falling back to ``info``.
     """
     name = str(level).strip().lower()
     if name in LEVEL_NAMES:
         return name
-    if name in _LEVEL_ALIASES:
-        return _LEVEL_ALIASES[name]
-    number: int | None = None
-    if name.startswith("level ") and name[6:].strip().isdigit():
-        number = int(name[6:])
-    elif name.isdigit():
-        number = int(name)
-    else:
-        resolved = logging.getLevelName(name.upper())
-        if isinstance(resolved, int):
-            number = resolved
+    number: int | None = levelno
+    if number is None:
+        if name in _LEVEL_ALIASES:
+            return _LEVEL_ALIASES[name]
+        if name.startswith("level ") and name[6:].strip().isdigit():
+            number = int(name[6:])
+        elif name.isdigit():
+            number = int(name)
+        else:
+            number = {k.lower(): v for k, v in logging.getLevelNamesMapping().items()}.get(name)
     if number is None:
         return "info"
     for threshold, bucket in (
@@ -193,6 +193,21 @@ def _normalize_level(level: object) -> str:
         if number <= threshold:
             return bucket
     return "critical"
+
+
+def _normalize_level_field(logger: WrappedLogger, method_name: str, event_dict: EventDict) -> EventDict:
+    """
+    Normalize ``level`` to the contract's five names.
+
+    Runs before ``remove_processors_meta`` so the stdlib record's numeric
+    ``levelno`` is still available: custom level names (``addLevelName(45,
+    "Severe")``) are mapped by number, not by name.
+    """
+    if "level" in event_dict:
+        record = event_dict.get("_record")
+        levelno = record.levelno if isinstance(record, logging.LogRecord) else None
+        event_dict["level"] = _normalize_level(event_dict["level"], levelno)
+    return event_dict
 
 
 def _to_flat_scalar(value: object) -> object:
@@ -235,12 +250,11 @@ def _enforce_contract_types(logger: WrappedLogger, method_name: str, event_dict:
     first document of the day. One app logging ``error`` as an object or
     ``status_code`` as a string breaks the mapping for every app, so:
 
-    - ``level`` is normalized to debug|info|warning|error|critical.
     - An exception passed as ``error=exc`` becomes ``str(exc)``;
       ``exception=exc`` becomes its formatted traceback. Both set
       ``error_type`` to the class name unless the caller set it.
-    - ``status_code`` must be an int and ``duration_s`` a number. Values that
-      convert losslessly (``"200"``, ``200.0``, ``"0.5"``) are converted;
+    - ``status_code`` must be an int and ``duration_s`` a finite number. Values
+      that convert losslessly (``"200"``, ``200.0``, ``"0.5"``) are converted;
       anything else moves to ``status_code_raw`` / ``duration_s_raw`` as a
       string, so the reserved field keeps its type and the value is kept.
     - Other reserved fields (``message``, ``event``, ``error``, ``path``, ...)
@@ -251,9 +265,6 @@ def _enforce_contract_types(logger: WrappedLogger, method_name: str, event_dict:
     A caller-supplied ``timestamp``, ``level`` or ``logger`` never reaches this
     point: the pipeline overwrites them with the real values earlier.
     """
-    if "level" in event_dict:
-        event_dict["level"] = _normalize_level(event_dict["level"])
-
     for key in ("error", "exception"):
         value = event_dict.get(key)
         if isinstance(value, BaseException):
@@ -265,7 +276,7 @@ def _enforce_contract_types(logger: WrappedLogger, method_name: str, event_dict:
 
     for key, integer in (("status_code", True), ("duration_s", False)):
         value = event_dict.get(key)
-        if value is None or (type(value) is int or (not integer and type(value) is float)):
+        if value is None or type(value) is int or (not integer and type(value) is float and math.isfinite(value)):
             continue
         number = _coerce_number(value, integer=integer)
         if number is None:
@@ -453,6 +464,7 @@ def init_logger(
         # JSON lines for fluentbit/OpenSearch; tracebacks as a string field.
         event_types = EVENT_TYPES | (extra_event_types or set())
         renderer_processors = [
+            _normalize_level_field,
             ProcessorFormatter.remove_processors_meta,
             structlog.processors.format_exc_info,
             _enforce_contract_types,
@@ -460,7 +472,7 @@ def init_logger(
             structlog.processors.JSONRenderer(),
         ]
         if app_name:
-            renderer_processors.insert(1, _make_add_app_field(app_name))
+            renderer_processors.insert(2, _make_add_app_field(app_name))
     else:
         renderer_processors = [
             ProcessorFormatter.remove_processors_meta,

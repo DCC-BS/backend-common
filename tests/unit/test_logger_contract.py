@@ -91,7 +91,7 @@ class TestReservedFieldTypes:
     def test_duration_coerced_to_number(self, value, expected):
         assert enforce({"duration_s": value})["duration_s"] == expected
 
-    @pytest.mark.parametrize("value", ["fast", "nan", False])
+    @pytest.mark.parametrize("value", ["fast", "nan", False, float("nan"), float("inf"), float("-inf")])
     def test_unconvertible_duration_moved_to_raw(self, value):
         out = enforce({"duration_s": value})
         assert "duration_s" not in out
@@ -130,6 +130,14 @@ class TestLevelNames:
     )
     def test_normalized(self, level, expected):
         assert _normalize_level(level) == expected
+
+    def test_mixed_case_custom_name_resolved(self):
+        logging.addLevelName(45, "Severe")
+        assert _normalize_level("severe") == "critical"
+
+    def test_record_levelno_wins_over_name(self):
+        assert _normalize_level("notice", levelno=35) == "error"
+        assert _normalize_level("verbose", levelno=15) == "info"
 
 
 @pytest.fixture
@@ -179,8 +187,10 @@ class TestProductionPipeline:
         lib.warning("w", extra={"level": 99})
         lib.fatal("f")
         lib.log(45, "between error and critical")
+        logging.addLevelName(25, "Notice")
+        lib.log(25, "custom mixed-case name")
         lines = prod_logger()
-        assert [line["level"] for line in lines] == ["debug", "debug", "warning", "critical", "critical"]
+        assert [line["level"] for line in lines] == ["debug", "debug", "warning", "critical", "critical", "warning"]
         assert all(line["logger"] == "contract.stdlib" for line in lines)
 
     def test_nested_and_reserved_fields_rendered_flat(self, prod_logger):
@@ -202,6 +212,12 @@ class TestProductionPipeline:
         assert line["response"] == '{"status": 503}'
         assert line["status_code"] == 503
         assert line["app"] == "test-app"
+
+    def test_non_finite_duration_renders_valid_json(self, prod_logger):
+        get_logger("contract.nan").info("request_finished", duration_s=float("nan"))
+        (line,) = prod_logger()
+        assert "duration_s" not in line
+        assert line["duration_s_raw"] == "nan"
 
     def test_non_string_event_moves_to_message(self, prod_logger):
         get_logger("contract.event").info({"weird": True})  # ty: ignore[invalid-argument-type]
