@@ -1,7 +1,7 @@
 """Unit tests for the request-completion logging middleware.
 
-The field names asserted here (event, method, path, status_code, duration_s)
-are a contract with OpenSearch dashboard panels and alerting monitors.
+The field names asserted here (event, method, path, status_code, duration_s,
+error, error_type) are a contract with OpenSearch dashboard panels and alerting monitors.
 """
 
 import pytest
@@ -30,6 +30,11 @@ class FakeLogger:
         self._record("error", event, **kwargs)
 
 
+class UnprintableError(Exception):
+    def __str__(self) -> str:
+        raise RuntimeError("broken __str__")
+
+
 @pytest.fixture
 def fake_logger(monkeypatch) -> FakeLogger:
     logger = FakeLogger()
@@ -49,6 +54,10 @@ def client(fake_logger) -> TestClient:
     @app.get("/boom")
     async def boom() -> dict:
         raise RuntimeError("kaputt")
+
+    @app.get("/unprintable")
+    async def unprintable() -> dict:
+        raise UnprintableError("hidden")
 
     @app.get("/health/liveness")
     async def liveness() -> dict:
@@ -112,7 +121,17 @@ class TestRequestFailed:
         assert kwargs["path"] == "/boom"
         assert kwargs["status_code"] == 500
         assert isinstance(kwargs["duration_s"], float)
+        assert kwargs["error"] == "kaputt"
+        assert kwargs["error_type"] == "RuntimeError"
         assert kwargs["exc_info"] is True
+
+    def test_exception_with_broken_str_still_logged(self, client, fake_logger):
+        response = client.get("/unprintable")
+        assert response.status_code == 500
+        (failed,) = only(fake_logger.calls, "request_failed")
+        _, _, kwargs = failed
+        assert kwargs["error"] == "UnprintableError('hidden')"
+        assert kwargs["error_type"] == "UnprintableError"
 
 
 class TestExcludedPaths:

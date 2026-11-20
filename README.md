@@ -275,6 +275,28 @@ human-readable message like the one above — is moved to the `message` field
 at render time. Extend the vocabulary per app with
 `init_logger(extra_event_types={...})`.
 
+**Field types**: all apps share one OpenSearch index, where a field's type is
+fixed by the first line of the day, so the production pipeline enforces the
+log contract's types before rendering:
+
+- `level` is always one of `debug`, `info`, `warning`, `error`, `critical`
+  (stdlib/custom levels such as `warn`, `fatal`, `trace` are mapped).
+- Custom fields are flat scalars. A dict, list, tuple or set under `key` is
+  serialized to a JSON string under `key_json` (`key` is dropped), so the
+  string never clashes with an object that other apps or older versions still
+  send under `key` — OpenSearch rejects the whole line on a type clash. Other
+  objects become `str()` under their own key (`repr()` if `__str__` fails);
+  `nan`/`inf` floats become strings. Log `status=503`, not
+  `response={"status": 503}`.
+- An exception passed as `error=exc` becomes `str(exc)` plus `error_type`
+  (class name); `exception=exc` becomes the traceback string.
+- `status_code` must be an int and `duration_s` a finite float (ints are
+  emitted as floats): lossless
+  conversions (`"200"` → `200`) are applied, anything else is moved to
+  `status_code_raw` / `duration_s_raw`. Other reserved fields (`message`,
+  `error`, `path`, `request_id`, ...) are coerced to strings. A caller-supplied
+  `timestamp`, `level` or `logger` is overwritten with the real value.
+
 `LOG_LEVEL` controls application diagnostics (recommended: `debug` on test
 stages, `info` in prod). Usage events are exempt — see below.
 
@@ -296,7 +318,7 @@ call `log_llm_call(result)` themselves.
 **Request correlation and completion events**: the logging middleware binds a
 per-request `request_id` (from the `X-Request-ID` header, or generated) into
 the log context and emits one `request_finished` (or `request_failed`, with
-traceback) per request, carrying `method`, `path` (route template, never the
+`error`, `error_type` and the traceback in `exception`) per request, carrying `method`, `path` (route template, never the
 concrete URL), `status_code`, and `duration_s`. Health probes and CORS
 preflights are not logged as `request_finished`; excluded paths still log
 `request_failed` when they raise. Exclude additional high-frequency endpoints

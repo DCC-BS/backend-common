@@ -10,7 +10,7 @@ from starlette.responses import Response
 from starlette.routing import Route
 
 from dcc_backend_common.logger import get_logger
-from dcc_backend_common.logger.logger import asgi_exception_logged
+from dcc_backend_common.logger.logger import asgi_exception_logged, safe_str
 
 logger = get_logger("request")
 
@@ -54,8 +54,9 @@ class LoggingMiddleware(BaseHTTPMiddleware):
     - Echoes the request_id back in the X-Request-ID response header.
     - Emits exactly one completion event per request:
         * `request_finished` (INFO) with method, path, status_code, duration_s
-        * `request_failed` (ERROR) with the same fields plus the traceback when
-          an unhandled exception escapes; the exception is re-raised unchanged.
+        * `request_failed` (ERROR) with the same fields plus `error`,
+          `error_type` and the traceback (`exception`) when an unhandled
+          exception escapes; the exception is re-raised unchanged.
     - `path` is always the route template ("/items/{item_id}"), never the
       concrete URL, and "<unmatched>" for 404s — the field is a terms bucket in
       OpenSearch and must stay low-cardinality and free of user data.
@@ -93,13 +94,15 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
         try:
             response = await call_next(request)
-        except Exception:
+        except Exception as exc:
             logger.error(
                 "request_failed",
                 method=method,
                 path=_route_template(request),
                 status_code=500,
                 duration_s=round(time.perf_counter() - start_time, 4),
+                error=safe_str(exc),
+                error_type=type(exc).__name__,
                 exc_info=True,
             )
             # Tells the uvicorn.error filter that this failure is recorded, so

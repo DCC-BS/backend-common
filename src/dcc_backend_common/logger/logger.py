@@ -1,7 +1,10 @@
 import contextvars
 import enum
+import json
 import logging
+import math
 import os
+import traceback
 from enum import StrEnum
 
 import structlog
@@ -124,6 +127,207 @@ def _coerce_field_values(logger: WrappedLogger, method_name: str, event_dict: Ev
     for key, value in event_dict.items():
         if isinstance(value, enum.Enum):
             event_dict[key] = value.value
+    return event_dict
+
+
+LEVEL_NAMES: frozenset[str] = frozenset({"debug", "info", "warning", "error", "critical"})
+"""The only values the ``level`` field may carry (log contract)."""
+
+_LEVEL_ALIASES: dict[str, str] = {
+    "warn": "warning",
+    "exception": "error",
+    "fatal": "critical",
+    "trace": "debug",
+    "notset": "debug",
+}
+
+# Reserved fields of the log contract that must be strings.
+_RESERVED_STR_FIELDS = frozenset({
+    "timestamp",
+    "message",
+    "event",
+    "app",
+    "logger",
+    "request_id",
+    "error",
+    "error_type",
+    "exception",
+    "method",
+    "path",
+})
+
+_SCALAR_TYPES = (str, int, float, bool, type(None))
+
+
+def _normalize_level(level: object, levelno: int | None = None) -> str:
+    """
+    Map any level name onto debug|info|warning|error|critical.
+
+    structlog already maps ``warn``/``exception``, but stdlib records carry
+    their lowercased ``levelname``, which can be a custom name (``trace``,
+    ``severe``) or ``level 5`` for an unnamed numeric level. Those are bucketed
+    by the record's numeric ``levelno`` when given, else by the number the name
+    resolves to, falling back to ``info``.
+    """
+    name = str(level).strip().lower()
+    if name in LEVEL_NAMES:
+        return name
+    number: int | None = levelno
+    if number is None:
+        if name in _LEVEL_ALIASES:
+            return _LEVEL_ALIASES[name]
+        if name.startswith("level ") and name[6:].strip().isdigit():
+            number = int(name[6:])
+        elif name.isdigit():
+            number = int(name)
+        else:
+            number = {k.lower(): v for k, v in logging.getLevelNamesMapping().items()}.get(name)
+    if number is None:
+        return "info"
+    for threshold, bucket in (
+        (logging.DEBUG, "debug"),
+        (logging.INFO, "info"),
+        (logging.WARNING, "warning"),
+        (logging.ERROR, "error"),
+    ):
+        if number <= threshold:
+            return bucket
+    return "critical"
+
+
+def _normalize_level_field(logger: WrappedLogger, method_name: str, event_dict: EventDict) -> EventDict:
+    """
+    Normalize ``level`` to the contract's five names.
+
+    Runs before ``remove_processors_meta`` so the stdlib record's numeric
+    ``levelno`` is still available: custom level names (``addLevelName(45,
+    "Severe")``) are mapped by number, not by name.
+    """
+    if "level" in event_dict:
+        record = event_dict.get("_record")
+        levelno = record.levelno if isinstance(record, logging.LogRecord) else None
+        event_dict["level"] = _normalize_level(event_dict["level"], levelno)
+    return event_dict
+
+
+def safe_str(value: object) -> str:
+    """``str(value)`` that never raises: falls back to ``repr()``, then ``"<unprintable>"``.
+
+    A log call must never fail (and drop the line) because an object's
+    ``__str__`` is broken.
+    """
+    for convert in (str, repr):
+        try:
+            return convert(value)
+        except Exception:  # noqa: S112
+            continue
+    return "<unprintable>"
+
+
+def _is_container(value: object) -> bool:
+    return isinstance(value, (dict, list, tuple, set, frozenset))
+
+
+def _to_flat_scalar(value: object) -> object:
+    """
+    Serialize a non-scalar value to a string: JSON for containers, ``str()`` otherwise.
+
+    Non-finite floats become ``"nan"`` / ``"inf"`` / ``"-inf"``: JSONRenderer
+    would emit bare ``NaN`` / ``Infinity``, which is not valid JSON.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, _SCALAR_TYPES):
+        return value
+    if isinstance(value, (set, frozenset)):
+        try:
+            value = sorted(value)
+        except TypeError:
+            value = list(value)
+    if isinstance(value, (dict, list, tuple)):
+        try:
+            return json.dumps(value, default=safe_str, ensure_ascii=False, allow_nan=False)
+        except Exception:
+            return safe_str(value)
+    return safe_str(value)
+
+
+def _coerce_number(value: object, *, integer: bool) -> int | float | None:
+    """Convert ``value`` to int/float if that is lossless, else return None."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)  # ty: ignore[invalid-argument-type]
+    except Exception:
+        return None
+    if not math.isfinite(number):
+        return None
+    if integer:
+        return int(number) if number.is_integer() else None
+    return number
+
+
+def _enforce_contract_types(logger: WrappedLogger, method_name: str, event_dict: EventDict) -> EventDict:
+    """
+    Guarantee the field types of the log contract right before JSON rendering.
+
+    All apps share one OpenSearch index, where a field's type is fixed by the
+    first document of the day. One app logging ``error`` as an object or
+    ``status_code`` as a string breaks the mapping for every app, so:
+
+    - An exception passed as ``error=exc`` becomes ``str(exc)``;
+      ``exception=exc`` becomes its formatted traceback. Both set
+      ``error_type`` to the class name unless the caller set it.
+    - ``status_code`` must be an int and ``duration_s`` a finite float (ints
+      are emitted as floats, so the first line of the day never maps it as
+      ``long``). Values that convert losslessly (``"200"``, ``200.0``,
+      ``"0.5"``) are converted; anything else moves to ``status_code_raw`` /
+      ``duration_s_raw`` as a string, so the reserved field keeps its type and
+      the value is kept.
+    - Other reserved fields (``message``, ``event``, ``error``, ``path``, ...)
+      are coerced to strings.
+    - Every custom field is flattened to a scalar. A dict/list/tuple/set
+      ``key`` becomes a JSON string under ``<key>_json`` (and ``key`` is
+      dropped), so the string never shares a field name with the object that
+      older library versions or other apps still send under ``key`` —
+      OpenSearch rejects the whole document on such a type clash. Any other
+      object becomes ``str()`` under its own key, and non-finite floats
+      become ``"nan"`` / ``"inf"``.
+
+    A caller-supplied ``timestamp``, ``level`` or ``logger`` never reaches this
+    point: the pipeline overwrites them with the real values earlier.
+    """
+    for key in ("error", "exception"):
+        value = event_dict.get(key)
+        if isinstance(value, BaseException):
+            event_dict.setdefault("error_type", type(value).__name__)
+            if key == "error":
+                event_dict[key] = safe_str(value)
+            else:
+                event_dict[key] = "".join(traceback.format_exception(value)).rstrip()
+
+    for key, integer in (("status_code", True), ("duration_s", False)):
+        value = event_dict.get(key)
+        if value is None or (integer and type(value) is int):
+            continue
+        number = _coerce_number(value, integer=integer)
+        if number is None:
+            event_dict[f"{key}_raw"] = safe_str(event_dict.pop(key))
+        else:
+            event_dict[key] = number
+
+    for key, value in list(event_dict.items()):
+        if key in ("status_code", "duration_s"):
+            continue
+        if key in _RESERVED_STR_FIELDS:
+            if value is not None and not isinstance(value, str):
+                flat = _to_flat_scalar(value)
+                event_dict[key] = flat if isinstance(flat, str) else safe_str(flat)
+        elif _is_container(value):
+            del event_dict[key]
+            event_dict[f"{key}_json"] = _to_flat_scalar(value)
+        else:
+            event_dict[key] = _to_flat_scalar(value)
     return event_dict
 
 
@@ -280,9 +484,11 @@ def init_logger(
     # (uvicorn, aiohttp, ...), so they end up with the same shape.
     foreign_pre_chain: list[Processor] = [
         structlog.contextvars.merge_contextvars,
+        # Before add_logger_name / add_log_level, so `extra={"level": ...}`
+        # cannot overwrite the record's real level or logger name.
+        structlog.stdlib.ExtraAdder(),
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
-        structlog.stdlib.ExtraAdder(),
         _drop_color_message_key,
         _coerce_field_values,
         timestamper,
@@ -293,13 +499,15 @@ def init_logger(
         # JSON lines for fluentbit/OpenSearch; tracebacks as a string field.
         event_types = EVENT_TYPES | (extra_event_types or set())
         renderer_processors = [
+            _normalize_level_field,
             ProcessorFormatter.remove_processors_meta,
             structlog.processors.format_exc_info,
+            _enforce_contract_types,
             _make_split_event_message(event_types),
             structlog.processors.JSONRenderer(),
         ]
         if app_name:
-            renderer_processors.insert(1, _make_add_app_field(app_name))
+            renderer_processors.insert(2, _make_add_app_field(app_name))
     else:
         renderer_processors = [
             ProcessorFormatter.remove_processors_meta,
